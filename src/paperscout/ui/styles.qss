@@ -1,0 +1,96 @@
+/* Minimal QQ-like light styling (can evolve later) */
+QMainWindow {
+  background: #f5f6f7;
+}
+QListWidget {
+  background: #ffffff;
+  border: none;
+  outline: 0;
+  selection-background-color: #eaf3ff;
+  selection-color: #111111;
+}
+QListWidget::item {
+  padding: 10px 12px;
+  border-bottom: 1px solid #f0f0f0;
+}
+QListWidget::item:selected {
+  background: #eaf3ff;
+  color: #111111;
+}
+
+QTreeWidget {
+  background: #ffffff;
+  border: none;
+  outline: 0;
+  selection-background-color: #eaf3ff;
+  selection-color: #111111;
+}
+QTreeWidget::item {
+  padding: 10px 12px;
+  border-bottom: 1px solid #f0f0f0;
+}
+QTreeWidget::item:selected {
+  background: #eaf3ff;
+  color: #111111;
+}
+
+QFrame#LeftPane {
+  background: #ffffff;
+  border-right: 1px solid #e8e8e8;
+}
+QFrame#RightPane {
+  background: #ffffff;
+}
+QTextBrowser {
+  border: none;
+  background: #ffffff;
+}
+QWidget#Composer {
+  background: #ffffff;
+  border-top: 1px solid #e8e8e8;
+}
+QFrame#Toolbar {
+  border: none;
+}
+QToolButton {
+  border: none;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+QToolButton:hover {
+  background: #f2f4f7;
+}
+QTextEdit#InputBox {
+  border: none;
+  padding: 8px;
+  font-size: 13px;
+}
+QPushButton#SendButton {
+  background: #1677ff;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 10px;
+}
+QPushButton#SendButton:hover {
+  background: #0f62d8;
+}
+
+QPushButton#MiniBtn {
+  background: #f2f4f7;
+  color: #111111;
+  border: 1px solid #e8e8e8;
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+QPushButton#MiniBtn:hover {
+  background: #eaf3ff;
+}
+QPushButton#MiniBtn:disabled {
+  background: #f7f7f7;
+  color: #999999;
+}
+QLabel#ModelTitle {
+  font-weight: 600;
+  padding: 10px 12px;
+}
