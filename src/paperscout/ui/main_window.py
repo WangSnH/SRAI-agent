@@ -223,13 +223,12 @@ class MainWindow(QMainWindow):
         self.chat.set_session(thread_id)
         self.chat.set_meta("original_input", original_input, session_id=thread_id)
         self.chat.set_meta("init_state", "running", session_id=thread_id)
-        self.chat.add("system", f"已创建对话：{thread_name}（初始化中…）", session_id=thread_id)
         self._refresh()
 
         from paperscout.ui.workers.init_pipeline_worker import start_init_pipeline
 
         def _on_progress(msg: str):
-            self.chat.add("system", msg, session_id=thread_id)
+            self.chat.upsert_system_line(msg, session_id=thread_id, key="init_progress_line_idx")
             self._refresh()
 
         def _on_ok(summary: str, data: dict):
@@ -238,6 +237,8 @@ class MainWindow(QMainWindow):
                 self.chat.add("system", "初始化结果迟到返回，已忽略。", session_id=thread_id)
                 self._refresh()
                 return
+
+            self.chat.upsert_system_line("初始化 6/6", session_id=thread_id, key="init_progress_line_idx")
 
             # 保存 init 信息到 session_meta，后续每次发送会注入
             init_meta = {
@@ -266,6 +267,7 @@ class MainWindow(QMainWindow):
 
         def _on_err(err: str):
             self.chat.set_meta("init_state", "failed", session_id=thread_id)
+            self.chat.upsert_system_line("初始化 失败", session_id=thread_id, key="init_progress_line_idx")
             self.chat.add("assistant", f"初始化失败：{err}", session_id=thread_id)
             self._refresh()
 
@@ -273,6 +275,7 @@ class MainWindow(QMainWindow):
             state = str(self.chat.get_meta("init_state", "", session_id=thread_id) or "").strip()
             if state == "running":
                 self.chat.set_meta("init_state", "timeout", session_id=thread_id)
+                self.chat.upsert_system_line("初始化 超时", session_id=thread_id, key="init_progress_line_idx")
                 self.chat.add(
                     "assistant",
                     "初始化超时，已自动结束初始化。你可以直接继续聊天；如需重试请新建会话。",

@@ -64,7 +64,7 @@ DEFAULT_AGENT_CFG = {
     },
     "openai": {
         "model": "gpt-4.1",
-        "api_key_keyring": "sk-dzM0wBRcdjei8aZs65567f569fEe42C6B0723670455e8dEa",
+        "api_key_keyring": "",
         "base_url": "https://api.v3.cm/v1",
         "temperature": 0.2,
         "top_p": 1.0,
@@ -86,6 +86,11 @@ DEFAULT_AGENT_CFG = {
         "top_p": 1.0,
         "max_tokens": 2048,
     },
+}
+
+DEFAULT_SYSTEM_CFG = {
+    "final_output_paper_count": 5,
+    "arxiv_fetch_max_results": 20,
 }
 
 # ===========================
@@ -238,6 +243,18 @@ def _safe_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def get_system_param_int(
+    settings: Dict[str, Any],
+    key: str,
+    default: int,
+    min_value: int,
+    max_value: int,
+) -> int:
+    system_cfg = (settings.get("system", {}) or {}) if isinstance(settings, dict) else {}
+    value = _safe_int(system_cfg.get(key), default) if isinstance(system_cfg, dict) else default
+    return max(min_value, min(max_value, value))
 
 
 # ===========================
@@ -543,7 +560,8 @@ def _default_settings() -> Dict[str, Any]:
         "llm": {
             "active_profile_id": profiles[0]["id"],
             "profiles": profiles,
-        }
+        },
+        "system": _deep_copy(DEFAULT_SYSTEM_CFG),
     }
 
 
@@ -593,6 +611,13 @@ def load_settings() -> Dict[str, Any]:
     if not active_id or not any(p.get("id") == active_id for p in profiles):
         active_id = profiles[0].get("id", "")
         llm["active_profile_id"] = active_id
+
+    system_cfg = data.get("system") if isinstance(data, dict) else {}
+    system_cfg = system_cfg if isinstance(system_cfg, dict) else {}
+    merged_system = _deep_copy(DEFAULT_SYSTEM_CFG)
+    for k in merged_system.keys():
+        merged_system[k] = _safe_int(system_cfg.get(k), merged_system[k])
+    data["system"] = merged_system
     
     return data
 

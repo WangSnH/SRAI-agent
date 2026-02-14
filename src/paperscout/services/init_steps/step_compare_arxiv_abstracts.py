@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from paperscout.config.settings import get_system_param_int
 from paperscout.services.dual_orchestrator import compare_arxiv_abstracts_with_input
 from paperscout.services.init_steps.base import InitContext, InitStep
 
@@ -10,6 +11,7 @@ class StepCompareArxivAbstracts(InitStep):
     name = "第二个Prompt：摘要与原始输入对比"
 
     def run(self, ctx: InitContext) -> None:
+        final_count = get_system_param_int(ctx.settings, "final_output_paper_count", 5, 1, 50)
         papers = ctx.data.get("arxiv_selected_papers")
         papers = papers if isinstance(papers, list) else []
 
@@ -56,16 +58,16 @@ class StepCompareArxivAbstracts(InitStep):
                     ordered.append(p)
                     used.add(pid)
 
-            if len(ordered) < 5:
+            if len(ordered) < final_count:
                 for p in papers:
                     pid = str(p.get("id") or "").strip()
                     if pid and pid not in used:
                         ordered.append(p)
                         used.add(pid)
-                    if len(ordered) >= 5:
+                    if len(ordered) >= final_count:
                         break
 
-            final_selected = ordered[:5]
+            final_selected = ordered[:final_count]
             if final_selected:
                 ctx.data["arxiv_selected_papers"] = final_selected
                 ctx.data["arxiv_selected_count"] = len(final_selected)

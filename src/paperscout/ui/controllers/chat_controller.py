@@ -32,6 +32,21 @@ class ChatController:
         sid = (session_id or self._current_session).strip() or "default"
         self._sessions.setdefault(sid, []).append(ChatMessage(role=role, text=text, ts=datetime.now()))
 
+    def upsert_system_line(self, text: str, session_id: Optional[str] = None, key: str = "progress_line_idx"):
+        sid = (session_id or self._current_session).strip() or "default"
+        self._sessions.setdefault(sid, [])
+        self._meta.setdefault(sid, {})
+
+        idx = self._meta[sid].get(key)
+        if isinstance(idx, int) and 0 <= idx < len(self._sessions[sid]):
+            msg = self._sessions[sid][idx]
+            if msg.role == "system":
+                msg.text = text
+                return
+
+        self._sessions[sid].append(ChatMessage(role="system", text=text, ts=datetime.now()))
+        self._meta[sid][key] = len(self._sessions[sid]) - 1
+
     def messages(self, session_id: Optional[str] = None) -> List[ChatMessage]:
         sid = (session_id or self._current_session).strip() or "default"
         return self._sessions.setdefault(sid, [])

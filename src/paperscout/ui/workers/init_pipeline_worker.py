@@ -40,25 +40,23 @@ class InitPipelineWorker(QObject):
 
             steps = build_steps()
             total = len(steps)
-            self.progress.emit(f"开始初始化管线（共 {total} 步）…")
+            if total <= 0:
+                self.finished.emit(make_summary(ctx), ctx.data)
+                return
 
             for i, step in enumerate(steps, start=1):
-                step_name = getattr(step, "name", step.__class__.__name__)
-                self.progress.emit(f"▶ ({i}/{total}) {step_name} …")
+                self.progress.emit(f"初始化 {i}/{total}")
 
                 t0 = perf_counter()
                 try:
                     step.run(ctx)
                 except Exception as e:
-                    ms = int((perf_counter() - t0) * 1000)
-                    self.progress.emit(f"❌ ({i}/{total}) {step_name} 失败（{ms}ms）：{e}")
+                    step_name = getattr(step, "name", step.__class__.__name__)
+                    self.progress.emit(f"初始化 {i}/{total}（失败）")
                     self.failed.emit(f"{step_name} 失败：{e}")
                     return
 
-                ms = int((perf_counter() - t0) * 1000)
-                self.progress.emit(f"✅ ({i}/{total}) {step_name} 完成（{ms}ms）")
-
-            self.progress.emit("✅ 初始化管线全部完成。")
+            self.progress.emit(f"初始化 {total}/{total}")
             self.finished.emit(make_summary(ctx), ctx.data)
 
         except Exception as e:

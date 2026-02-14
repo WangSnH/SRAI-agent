@@ -7,7 +7,7 @@ name = "paperscout"
 version = "0.1.0"
 description = "PaperScout UI scaffold"
 requires-python = ">=3.9"
-dependencies = ["PySide6>=6.5", "openai>=1.0", "keyring>=24.0", "cryptography>=41.0"]
+dependencies = ["PySide6>=6.5", "openai>=1.0", "keyring>=24.0", "cryptography>=41.0", "sentence-transformers>=3.0"]
 
 [project.scripts]
 paperscout = "paperscout.__main__:main"

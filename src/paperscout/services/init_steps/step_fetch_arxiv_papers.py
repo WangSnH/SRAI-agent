@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-import math
-import re
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+import math
+import re
 from collections import Counter
 from typing import Any, Dict, List
 
+from paperscout.config.settings import get_system_param_int
 from paperscout.services.init_steps.base import InitContext, InitStep
 
 
@@ -25,17 +26,32 @@ class StepFetchArxivPapers(InitStep):
                 arxiv.get("keywords"),
                 ["large language model", "transformer", "agent"],
             )
-            max_results = self._safe_int(arxiv.get("max_results"), 20)
-            max_results = max(1, min(100, max_results))
+            configured_final_count = get_system_param_int(
+                ctx.settings,
+                "final_output_paper_count",
+                5,
+                1,
+                50,
+            )
+            configured_max_results = get_system_param_int(
+                ctx.settings,
+                "arxiv_fetch_max_results",
+                20,
+                5,
+                100,
+            )
+            max_results = self._safe_int(arxiv.get("max_results"), configured_max_results)
+            max_results = max(configured_final_count, min(100, max_results))
 
-            target_count = max(max_results // 2, 5)
+            target_count = configured_final_count
             fetch_count = max(max_results, target_count * 2)
             fetch_count = max(10, min(100, fetch_count))
+            query_text = str(ctx.original_input or "").strip() or " ".join(keywords)
 
             papers = self._fetch_arxiv(categories, keywords, fetch_count)
             filtered = self._keyword_filter(papers, keywords)
-            ranked_filtered = self._rank_tfidf(filtered, keywords)
-            ranked_all = self._rank_tfidf(papers, keywords)
+            ranked_filtered = self._rank_semantic(filtered, query_text)
+            ranked_all = self._rank_semantic(papers, query_text)
 
             selected: List[Dict[str, Any]] = []
             seen_ids = set()
@@ -60,6 +76,8 @@ class StepFetchArxivPapers(InitStep):
             ctx.data["arxiv_fetch_config"] = {
                 "categories": categories,
                 "keywords": keywords,
+                "semantic_query": query_text,
+                "final_output_paper_count": target_count,
                 "max_results": max_results,
                 "target_count": target_count,
                 "fetch_count": fetch_count,
@@ -176,55 +194,109 @@ class StepFetchArxivPapers(InitStep):
                 out.append(p)
         return out
 
-    @staticmethod
-    def _tokenize(text: str) -> List[str]:
-        return re.findall(r"[a-zA-Z][a-zA-Z0-9_\-]{1,}", (text or "").lower())
-
-    def _rank_tfidf(self, papers: List[Dict[str, Any]], keywords: List[str]) -> List[Dict[str, Any]]:
+    def _rank_semantic(self, papers: List[Dict[str, Any]], query_text: str) -> List[Dict[str, Any]]:
         if not papers:
             return []
 
-        docs = [self._tokenize(f"{p.get('title', '')} {p.get('summary', '')}") for p in papers]
-        query_tokens = self._tokenize(" ".join(keywords))
-        if not query_tokens:
+        clean_query = str(query_text or "").strip()
+        if not clean_query:
             return papers
 
-        n_docs = len(docs)
-        df = Counter()
-        for tokens in docs:
-            for t in set(tokens):
-                df[t] += 1
+        docs = [f"{p.get('title', '')}\n{p.get('summary', '')}".strip() for p in papers]
 
-        def idf(token: str) -> float:
-            return math.log((1 + n_docs) / (1 + df.get(token, 0))) + 1.0
+        try:
+            from sentence_transformers import SentenceTransformer
+        except Exception:
+            return self._rank_keyword_overlap(papers, clean_query)
 
-        def vec(tokens: List[str]) -> Dict[str, float]:
-            if not tokens:
-                return {}
-            tf = Counter(tokens)
-            total = float(len(tokens))
-            return {t: (c / total) * idf(t) for t, c in tf.items()}
-
-        qv = vec(query_tokens)
-
-        def cosine(a: Dict[str, float], b: Dict[str, float]) -> float:
-            if not a or not b:
-                return 0.0
-            dot = 0.0
-            for k, v in a.items():
-                dot += v * b.get(k, 0.0)
-            na = math.sqrt(sum(v * v for v in a.values()))
-            nb = math.sqrt(sum(v * v for v in b.values()))
-            if na == 0.0 or nb == 0.0:
-                return 0.0
-            return dot / (na * nb)
+        try:
+            model = SentenceTransformer("all-MiniLM-L6-v2")
+            embeddings = model.encode([clean_query] + docs, normalize_embeddings=True)
+            query_vec = embeddings[0]
+            doc_vecs = embeddings[1:]
+        except Exception:
+            return self._rank_keyword_overlap(papers, clean_query)
 
         scored: List[Dict[str, Any]] = []
-        for p, tokens in zip(papers, docs):
-            score = cosine(vec(tokens), qv)
+        for p, vec in zip(papers, doc_vecs):
+            score = float(query_vec @ vec)
             item = dict(p)
-            item["tfidf_score"] = round(score, 6)
+            item["semantic_score"] = round(score, 6)
             scored.append(item)
 
-        scored.sort(key=lambda x: float(x.get("tfidf_score", 0.0)), reverse=True)
+        scored.sort(key=lambda x: float(x.get("semantic_score", 0.0)), reverse=True)
         return scored
+
+    @staticmethod
+    def _rank_keyword_overlap(papers: List[Dict[str, Any]], query_text: str) -> List[Dict[str, Any]]:
+        query_terms = StepFetchArxivPapers._tokenize_for_overlap(query_text)
+        if not query_terms:
+            return papers
+
+        doc_terms: List[List[str]] = []
+        title_terms: List[List[str]] = []
+        for p in papers:
+            title = str(p.get("title", "") or "")
+            summary = str(p.get("summary", "") or "")
+            title_tokens = StepFetchArxivPapers._tokenize_for_overlap(title)
+            body_tokens = StepFetchArxivPapers._tokenize_for_overlap(f"{title} {summary}")
+            title_terms.append(title_tokens)
+            doc_terms.append(body_tokens)
+
+        if not doc_terms:
+            return papers
+
+        n_docs = len(doc_terms)
+        avg_dl = sum(len(t) for t in doc_terms) / max(1, n_docs)
+        df = Counter()
+        for tokens in doc_terms:
+            for token in set(tokens):
+                df[token] += 1
+
+        k1 = 1.2
+        b = 0.75
+
+        def idf(term: str) -> float:
+            dft = df.get(term, 0)
+            return math.log(1.0 + (n_docs - dft + 0.5) / (dft + 0.5))
+
+        scored: List[Dict[str, Any]] = []
+        for p, terms, t_terms in zip(papers, doc_terms, title_terms):
+            if not terms:
+                score = 0.0
+            else:
+                tf = Counter(terms)
+                dl = len(terms)
+                score = 0.0
+                for term in query_terms:
+                    freq = tf.get(term, 0)
+                    if freq <= 0:
+                        continue
+                    denom = freq + k1 * (1.0 - b + b * dl / max(1e-6, avg_dl))
+                    score += idf(term) * ((freq * (k1 + 1.0)) / max(1e-6, denom))
+
+                if t_terms:
+                    title_hit_ratio = sum(1 for term in set(query_terms) if term in set(t_terms)) / max(1, len(set(query_terms)))
+                    score += 0.6 * title_hit_ratio
+
+            item = dict(p)
+            item["semantic_score"] = round(score, 6)
+            scored.append(item)
+
+        scored.sort(key=lambda x: float(x.get("semantic_score", 0.0)), reverse=True)
+        return scored
+
+    @staticmethod
+    def _tokenize_for_overlap(text: str) -> List[str]:
+        raw = str(text or "").lower()
+        parts = re.findall(r"[a-z0-9][a-z0-9_\-]{1,}|[\u4e00-\u9fff]{1,}", raw)
+        out: List[str] = []
+        for part in parts:
+            if re.fullmatch(r"[\u4e00-\u9fff]+", part):
+                if len(part) <= 2:
+                    out.append(part)
+                else:
+                    out.extend(part[i : i + 2] for i in range(len(part) - 1))
+            else:
+                out.append(part)
+        return [x for x in out if x]

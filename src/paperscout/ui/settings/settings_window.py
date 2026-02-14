@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 
 from paperscout.config.settings import load_settings, save_settings
 from .pages.llm_page import LLMPage
+from .pages.system_page import SystemPage
 
 
 class SettingsWindow(QDialog):
@@ -99,10 +100,12 @@ class SettingsWindow(QDialog):
 
         self.pages = QStackedWidget()
         self.page_llm = LLMPage()
+        self.page_system = SystemPage()
         self.pages.addWidget(self.page_llm)
+        self.pages.addWidget(self.page_system)
 
         self._add_nav("配置 AI 模型", 0)
-        self._add_nav("（预留）数据源", -1)
+        self._add_nav("系统参数", 1)
         self._add_nav("（预留）导出", -1)
         self.nav.setCurrentRow(0)
 
@@ -129,6 +132,7 @@ class SettingsWindow(QDialog):
 
         # Load settings into page
         self.page_llm.load(self._working)
+        self.page_system.load(self._working)
 
         # Signals
         btn_close.clicked.connect(self.reject)  # 关闭：不保存
@@ -155,9 +159,12 @@ class SettingsWindow(QDialog):
         # 只有点“确认保存”才保存
         if not self.page_llm.validate_or_warn(self):
             return
+        if not self.page_system.validate_or_warn(self):
+            return
 
         # 写入页面状态到 working settings
         self.page_llm.dump(self._working)
+        self.page_system.dump(self._working)
 
         # 落盘
         save_settings(self._working)
