@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from paperscout.config.settings import get_system_param_int
 from paperscout.services.init_steps.base import InitContext, InitStep
 
 
@@ -58,6 +59,7 @@ def make_summary(ctx: InitContext) -> str:
     fetched = int(ctx.data.get("arxiv_total_fetched") or 0)
     filtered = int(ctx.data.get("arxiv_keyword_filtered") or 0)
     selected = int(ctx.data.get("arxiv_selected_count") or 0)
+    top_n = get_system_param_int(ctx.settings, "final_output_paper_count", 5, 1, 50)
     selected_papers = ctx.data.get("arxiv_selected_papers")
     compare_result = ctx.data.get("arxiv_compare_result")
     errs = ctx.data.get("init_errors") or {}
@@ -70,9 +72,9 @@ def make_summary(ctx: InitContext) -> str:
         lines.append(f"⚠ 初始化提示：{errs}")
 
     if fetched or filtered or selected:
-        lines.append(f"arXiv 抓取：{fetched} 篇；关键词过滤后：{filtered} 篇；TF-IDF 入选：{selected} 篇")
+        lines.append(f"arXiv 抓取：{fetched} 篇；关键词过滤后：{filtered} 篇；预筛选入选：{selected} 篇")
     if isinstance(selected_papers, list) and selected_papers:
-        top_titles = [str(x.get("title") or "").strip() for x in selected_papers[:5] if isinstance(x, dict)]
+        top_titles = [str(x.get("title") or "").strip() for x in selected_papers[:top_n] if isinstance(x, dict)]
         top_titles = [t for t in top_titles if t]
         if top_titles:
             lines.append("Top 论文：" + "；".join(top_titles))
@@ -84,7 +86,7 @@ def make_summary(ctx: InitContext) -> str:
         top_matches = compare_result.get("top_matches")
         if isinstance(top_matches, list) and top_matches:
             best = []
-            for item in top_matches[:5]:
+            for item in top_matches[:top_n]:
                 if not isinstance(item, dict):
                     continue
                 title = str(item.get("title") or item.get("id") or "").strip()
@@ -92,7 +94,7 @@ def make_summary(ctx: InitContext) -> str:
                 if title:
                     best.append(f"{title}({score})")
             if best:
-                lines.append("评分Top5：" + "；".join(best))
+                lines.append(f"评分Top{top_n}：" + "；".join(best))
 
     def clip(s: str, n: int = 240) -> str:
         s = s.replace("\r", "").strip()

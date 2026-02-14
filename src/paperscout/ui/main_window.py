@@ -244,6 +244,7 @@ class MainWindow(QMainWindow):
             init_meta = {
                 "openai_init_reply": (data or {}).get("openai_init_reply", ""),
                 "arxiv_api_payload": (data or {}).get("arxiv_api_payload", {}),
+                "arxiv_fetch_config": (data or {}).get("arxiv_fetch_config", {}),
                 "arxiv_selected_papers": (data or {}).get("arxiv_selected_papers", []),
                 "arxiv_selected_count": (data or {}).get("arxiv_selected_count", 0),
                 "arxiv_compare_result": (data or {}).get("arxiv_compare_result", {}),
@@ -266,10 +267,14 @@ class MainWindow(QMainWindow):
 
             compare_result = init_meta.get("arxiv_compare_result") if isinstance(init_meta.get("arxiv_compare_result"), dict) else {}
             used_model = str(compare_result.get("used_model") or "").strip() or "未获取"
+            fetch_cfg = init_meta.get("arxiv_fetch_config") if isinstance(init_meta.get("arxiv_fetch_config"), dict) else {}
+            semantic_model = str(fetch_cfg.get("sentence_transformer_model") or "").strip()
+            if not semantic_model:
+                semantic_model = str(system_cfg.get("sentence_transformer_model") or "").strip() or "未获取"
 
             header_line = (
                 f"参数：max_results默认={api_default}；第二Prompt截断={second_limit}；"
-                f"arXiv输出数量={arxiv_output}；第二Prompt模型={used_model}"
+                f"arXiv输出数量={arxiv_output}；第二Prompt模型={used_model}；语义筛选模型={semantic_model}"
             )
             final_report = f"{header_line}\n\n{final_report}"
             self.chat.add("assistant", final_report, session_id=thread_id)

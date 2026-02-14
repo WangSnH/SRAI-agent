@@ -88,15 +88,23 @@ DEFAULT_AGENT_CFG = {
     },
 }
 
+SENTENCE_TRANSFORMER_MODEL_OPTIONS = [
+    "BAAI/bge-large-en-v1.5",
+    "sentence-transformers/all-MiniLM-L6-v2",
+    "sentence-transformers/all-mpnet-base-v2",
+    "BAAI/bge-base-en-v1.5",
+]
+
 DEFAULT_SYSTEM_CFG = {
     "final_output_paper_count": 5,
-    "arxiv_api_default_max_results": 40,
-    "arxiv_fetch_max_results": 60,
-    "second_prompt_truncate_count": 80,
-    "weight_relevance": 0.55,
-    "weight_novelty": 0.30,
-    "weight_recency": 0.10,
+    "arxiv_api_default_max_results": 30,
+    "arxiv_fetch_max_results": 40,
+    "second_prompt_truncate_count": 40,
+    "weight_relevance": 0.50,
+    "weight_novelty": 0.25,
+    "weight_recency": 0.20,
     "weight_citation": 0.05,
+    "sentence_transformer_model": "BAAI/bge-large-en-v1.5",
 }
 
 # ===========================
@@ -273,6 +281,20 @@ def get_system_param_float(
     system_cfg = (settings.get("system", {}) or {}) if isinstance(settings, dict) else {}
     value = _safe_float(system_cfg.get(key), default) if isinstance(system_cfg, dict) else default
     return max(min_value, min(max_value, value))
+
+
+def get_system_param_choice(
+    settings: Dict[str, Any],
+    key: str,
+    default: str,
+    choices: List[str],
+) -> str:
+    system_cfg = (settings.get("system", {}) or {}) if isinstance(settings, dict) else {}
+    raw = system_cfg.get(key) if isinstance(system_cfg, dict) else default
+    value = str(raw).strip() if raw is not None else default
+    if value in choices:
+        return value
+    return default if default in choices else (choices[0] if choices else value)
 
 
 # ===========================
@@ -636,8 +658,15 @@ def load_settings() -> Dict[str, Any]:
     for k, default_value in merged_system.items():
         if isinstance(default_value, float):
             merged_system[k] = _safe_float(system_cfg.get(k), default_value)
-        else:
+        elif isinstance(default_value, int):
             merged_system[k] = _safe_int(system_cfg.get(k), default_value)
+        else:
+            v = system_cfg.get(k, default_value)
+            merged_system[k] = str(v).strip() if v is not None else default_value
+
+    selected_st_model = str(merged_system.get("sentence_transformer_model") or "").strip()
+    if selected_st_model not in SENTENCE_TRANSFORMER_MODEL_OPTIONS:
+        merged_system["sentence_transformer_model"] = DEFAULT_SYSTEM_CFG["sentence_transformer_model"]
     data["system"] = merged_system
     
     return data

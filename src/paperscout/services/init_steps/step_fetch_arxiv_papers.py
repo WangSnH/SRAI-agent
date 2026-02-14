@@ -11,12 +11,23 @@ import re
 from collections import Counter
 from typing import Any, Dict, List
 
-from paperscout.config.settings import app_data_dir, get_system_param_int
+from paperscout.config.settings import (
+    SENTENCE_TRANSFORMER_MODEL_OPTIONS,
+    app_data_dir,
+    get_system_param_choice,
+    get_system_param_int,
+)
 from paperscout.services.init_steps.base import InitContext, InitStep
 
 
 class StepFetchArxivPapers(InitStep):
     name = "调用 arXiv API 并筛选高质量论文"
+
+    _st_model_cache: Dict[str, Any] = {}
+
+    def __init__(self):
+        self._last_rank_backend = "bm25"
+        self._last_semantic_model = ""
 
     def run(self, ctx: InitContext) -> None:
         try:
@@ -71,7 +82,15 @@ class StepFetchArxivPapers(InitStep):
 
             coarse_ranked = self._rank_keyword_overlap(papers, query_text)
             coarse_candidates = coarse_ranked[:coarse_target_count]
-            fine_ranked = self._rank_semantic(coarse_candidates, query_text)
+            semantic_model = get_system_param_choice(
+                ctx.settings,
+                "sentence_transformer_model",
+                "BAAI/bge-large-en-v1.5",
+                SENTENCE_TRANSFORMER_MODEL_OPTIONS,
+            )
+            fine_ranked = self._rank_semantic(coarse_candidates, query_text, semantic_model)
+            fine_backend = str(getattr(self, "_last_rank_backend", "bm25") or "bm25")
+            fine_model = str(getattr(self, "_last_semantic_model", "") or "").strip()
 
             selected: List[Dict[str, Any]] = []
             seen_ids = set()
@@ -104,6 +123,9 @@ class StepFetchArxivPapers(InitStep):
                 "fetch_count": fetch_count,
                 "fetch_source": fetch_meta.get("source", "unknown"),
                 "fetch_errors": fetch_meta.get("errors", []),
+                "compare_algorithm": f"coarse=bm25; fine={fine_backend}{f'({fine_model})' if fine_model else ''}",
+                "fine_algorithm": f"{fine_backend}{f' ({fine_model})' if fine_model else ''}",
+                "sentence_transformer_model": semantic_model,
             }
             ctx.data["arxiv_total_fetched"] = len(papers)
             ctx.data["arxiv_keyword_filtered"] = len(filtered)
@@ -325,7 +347,7 @@ class StepFetchArxivPapers(InitStep):
                 out.append(p)
         return out
 
-    def _rank_semantic(self, papers: List[Dict[str, Any]], query_text: str) -> List[Dict[str, Any]]:
+    def _rank_semantic(self, papers: List[Dict[str, Any]], query_text: str, model_name: str) -> List[Dict[str, Any]]:
         if not papers:
             return []
 
@@ -338,14 +360,26 @@ class StepFetchArxivPapers(InitStep):
         try:
             from sentence_transformers import SentenceTransformer
         except Exception:
+            self._last_rank_backend = "bm25"
+            self._last_semantic_model = ""
             return self._rank_keyword_overlap(papers, clean_query)
 
         try:
-            model = SentenceTransformer("all-MiniLM-L6-v2")
+            selected_model = str(model_name or "BAAI/bge-large-en-v1.5").strip()
+            if selected_model not in SENTENCE_TRANSFORMER_MODEL_OPTIONS:
+                selected_model = "BAAI/bge-large-en-v1.5"
+            model = self._st_model_cache.get(selected_model)
+            if model is None:
+                model = SentenceTransformer(selected_model)
+                self._st_model_cache[selected_model] = model
             embeddings = model.encode([clean_query] + docs, normalize_embeddings=True)
             query_vec = embeddings[0]
             doc_vecs = embeddings[1:]
+            self._last_rank_backend = "sentence-transformers"
+            self._last_semantic_model = selected_model
         except Exception:
+            self._last_rank_backend = "bm25"
+            self._last_semantic_model = ""
             return self._rank_keyword_overlap(papers, clean_query)
 
         scored: List[Dict[str, Any]] = []

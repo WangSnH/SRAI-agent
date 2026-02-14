@@ -215,7 +215,7 @@ def generate_arxiv_api_payload(
     if not api_key:
         raise RuntimeError("OpenAI API Key 为空（请在设置里配置）")
 
-    default_max_results = get_system_param_int(settings, "arxiv_api_default_max_results", 40, 5, 300)
+    default_max_results = get_system_param_int(settings, "arxiv_api_default_max_results", 30, 5, 300)
 
     client = _mk_client(api_key, base_url)
     try:
@@ -258,17 +258,17 @@ def generate_arxiv_api_payload(
     )
 
 def _compare_weights(settings: Dict[str, Any]) -> Dict[str, float]:
-    wr = get_system_param_float(settings, "weight_relevance", 0.55, 0.0, 1_000_000.0)
-    wn = get_system_param_float(settings, "weight_novelty", 0.30, 0.0, 1_000_000.0)
-    wre = get_system_param_float(settings, "weight_recency", 0.10, 0.0, 1_000_000.0)
+    wr = get_system_param_float(settings, "weight_relevance", 0.50, 0.0, 1_000_000.0)
+    wn = get_system_param_float(settings, "weight_novelty", 0.25, 0.0, 1_000_000.0)
+    wre = get_system_param_float(settings, "weight_recency", 0.20, 0.0, 1_000_000.0)
     wc = get_system_param_float(settings, "weight_citation", 0.05, 0.0, 1_000_000.0)
 
     total = wr + wn + wre + wc
     if total <= 1e-9:
         return {
-            "relevance": 0.55,
-            "novelty": 0.30,
-            "recency": 0.10,
+            "relevance": 0.50,
+            "novelty": 0.25,
+            "recency": 0.20,
             "citation": 0.05,
         }
 
@@ -280,7 +280,7 @@ def _compare_weights(settings: Dict[str, Any]) -> Dict[str, float]:
     }
 
 
-def _normalize_compare_payload(payload: Dict[str, Any], weights: Dict[str, float]) -> Dict[str, Any]:
+def _normalize_compare_payload(payload: Dict[str, Any], weights: Dict[str, float], target_count: int) -> Dict[str, Any]:
     summary = str(payload.get("summary") or "").strip()
     top_matches = payload.get("top_matches")
 
@@ -336,7 +336,8 @@ def _normalize_compare_payload(payload: Dict[str, Any], weights: Dict[str, float
         return (score, relevance, novelty, recency, citation)
 
     normalized_matches.sort(key=_priority_key, reverse=True)
-    normalized_matches = normalized_matches[:5]
+    top_k = max(1, int(target_count))
+    normalized_matches = normalized_matches[:top_k]
     selected_ids = [str(x.get("id") or "").strip() for x in normalized_matches if str(x.get("id") or "").strip()]
 
     return {
@@ -364,6 +365,7 @@ def compare_arxiv_abstracts_with_input(
     profile = _active_profile(settings)
     openai_cfg = _agent_cfg(profile, "openai")
     weights = _compare_weights(settings)
+    target_count = get_system_param_int(settings, "final_output_paper_count", 5, 1, 50)
 
     api_key = str(openai_cfg.get("api_key") or "").strip()
     base_url = str(openai_cfg.get("base_url") or "").strip()
@@ -374,7 +376,7 @@ def compare_arxiv_abstracts_with_input(
         raise RuntimeError("OpenAI API Key 为空（请在设置里配置）")
 
     compact_papers: List[Dict[str, Any]] = []
-    compare_limit = get_system_param_int(settings, "second_prompt_truncate_count", 80, 5, 200)
+    compare_limit = get_system_param_int(settings, "second_prompt_truncate_count", 40, 5, 200)
     for p in papers[:compare_limit]:
         if not isinstance(p, dict):
             continue
@@ -395,6 +397,7 @@ def compare_arxiv_abstracts_with_input(
         prompt = OPENAI_ARXIV_COMPARE_PROMPT_TEMPLATE.format(
             original_input=(original_input or "").strip() or "（空）",
             papers_json=json.dumps(compact_papers, ensure_ascii=False),
+            target_count=target_count,
             w_relevance=f"{weights['relevance']:.2f}",
             w_novelty=f"{weights['novelty']:.2f}",
             w_recency=f"{weights['recency']:.2f}",
@@ -454,7 +457,7 @@ def compare_arxiv_abstracts_with_input(
             "used_model": model,
             "compare_limit": compare_limit,
         }
-    result = _normalize_compare_payload(parsed, weights)
+    result = _normalize_compare_payload(parsed, weights, target_count=target_count)
     result["used_model"] = model
     result["compare_limit"] = compare_limit
     return result
@@ -470,6 +473,7 @@ def organize_selected_papers_report(
     profile = _active_profile(settings)
     openai_cfg = _agent_cfg(profile, "openai")
     weights = _compare_weights(settings)
+    target_count = get_system_param_int(settings, "final_output_paper_count", 5, 1, 50)
 
     api_key = str(openai_cfg.get("api_key") or "").strip()
     base_url = str(openai_cfg.get("base_url") or "").strip()
@@ -497,6 +501,7 @@ def organize_selected_papers_report(
     try:
         prompt = OPENAI_ARXIV_ORGANIZE_PROMPT_TEMPLATE.format(
             original_input=(original_input or "").strip() or "（空）",
+            target_count=target_count,
             w_relevance=f"{weights['relevance']:.2f}",
             w_novelty=f"{weights['novelty']:.2f}",
             w_recency=f"{weights['recency']:.2f}",
@@ -604,8 +609,9 @@ def run_dual_turn(
 
     selected_papers = init_meta.get("arxiv_selected_papers")
     if isinstance(selected_papers, list) and selected_papers:
+        top_n = get_system_param_int(settings, "final_output_paper_count", 5, 1, 50)
         lines: List[str] = []
-        for i, p in enumerate(selected_papers[:5], start=1):
+        for i, p in enumerate(selected_papers[:top_n], start=1):
             if not isinstance(p, dict):
                 continue
             title = str(p.get("title") or "").strip()

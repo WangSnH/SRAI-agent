@@ -38,7 +38,7 @@ OPENAI_ARXIV_COMPARE_PROMPT_TEMPLATE = (
     "2) 对每篇论文按四个维度评分（0~1）：relevance(与原始输入相关性)、novelty(方法创新性)、recency(发布时间新近度)、citation(引用影响力)。\n"
     "3) 总分 score 也在 0~1，并按以下权重计算：score = {w_relevance}*relevance + {w_novelty}*novelty + {w_recency}*recency + {w_citation}*citation。\n"
     "4) 最终排序必须先看 relevance，再看 novelty，再看 recency；citation 仅作弱辅助，不可主导排序。\n"
-    "5) 必须只保留并返回总分最高的 5 篇（top_matches 长度固定为 5，候选不足时按实际数量）。\n"
+    "5) 必须只保留并返回总分最高的 {target_count} 篇（top_matches 长度固定为 {target_count}，候选不足时按实际数量）。\n"
     "6) 如果 citation_count 缺失，请按 0.5 的中性分处理 citation 维度。\n"
     "7) 禁止输出 Markdown 代码块。"
 )
@@ -53,6 +53,7 @@ OPENAI_ARXIV_ORGANIZE_SYSTEM_PROMPT = (
 OPENAI_ARXIV_ORGANIZE_PROMPT_TEMPLATE = (
     "请将第二个 prompt 的筛选结果和论文原始信息整理为中文 Markdown。\n"
     "原始需求: {original_input}\n"
+    "目标输出论文数量: {target_count}\n"
     "评分权重: relevance={w_relevance}, novelty={w_novelty}, recency={w_recency}, citation={w_citation}\n"
     "第二个Prompt结果(JSON): {compare_result_json}\n"
     "论文数据(JSON数组): {papers_json}\n\n"
@@ -67,6 +68,7 @@ OPENAI_ARXIV_ORGANIZE_PROMPT_TEMPLATE = (
     "   - 简要点评（2~3 句）\n"
     "   - 可直达链接（url）\n"
     "4) 先给一个“总体总结点评”，再分条列出论文；论文顺序必须按“相关性 > 创新性 > 时间”排列。\n"
+    "4.1) 论文清单请尽量输出 {target_count} 篇（候选不足时按实际数量）。\n"
     "5) 每篇论文的“简要点评”必须按同一顺序展开：先写相关性，再写创新性，最后写时间因素。\n"
     "6) 避免废话，重点突出与原始需求的相关性。\n"
     "7) 禁止输出 Markdown 代码块。\n\n"

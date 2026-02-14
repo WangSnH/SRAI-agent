@@ -3,20 +3,23 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QFormLayout, QLineEdit, QMessageBox
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QFormLayout, QLineEdit, QMessageBox, QComboBox
+
+from paperscout.config.settings import SENTENCE_TRANSFORMER_MODEL_OPTIONS
 
 
 class SystemPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._final_output_paper_count = 5
-        self._arxiv_api_default_max_results = 40
-        self._arxiv_fetch_max_results = 60
-        self._second_prompt_truncate_count = 80
-        self._weight_relevance = 0.55
-        self._weight_novelty = 0.30
-        self._weight_recency = 0.10
+        self._arxiv_api_default_max_results = 30
+        self._arxiv_fetch_max_results = 40
+        self._second_prompt_truncate_count = 40
+        self._weight_relevance = 0.50
+        self._weight_novelty = 0.25
+        self._weight_recency = 0.20
         self._weight_citation = 0.05
+        self._sentence_transformer_model = "BAAI/bge-large-en-v1.5"
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 16)
@@ -46,16 +49,16 @@ class SystemPage(QWidget):
         self.ed_final_output.setPlaceholderText("默认 5（范围 1~50）")
 
         self.ed_arxiv_api_default = QLineEdit()
-        self.ed_arxiv_api_default.setPlaceholderText("默认 40（范围 5~300）")
+        self.ed_arxiv_api_default.setPlaceholderText("默认 30（范围 5~300）")
 
         self.ed_arxiv_fetch = QLineEdit()
-        self.ed_arxiv_fetch.setPlaceholderText("默认 60（范围 5~300）")
+        self.ed_arxiv_fetch.setPlaceholderText("默认 40（范围 5~300）")
 
         self.ed_second_prompt_truncate = QLineEdit()
-        self.ed_second_prompt_truncate.setPlaceholderText("默认 80（范围 5~200）")
+        self.ed_second_prompt_truncate.setPlaceholderText("默认 40（范围 5~200）")
 
         self.ed_weight_relevance = QLineEdit()
-        self.ed_weight_relevance.setPlaceholderText("默认 0.55")
+        self.ed_weight_relevance.setPlaceholderText("默认 0.50")
 
         self.ed_weight_novelty = QLineEdit()
         self.ed_weight_novelty.setPlaceholderText("默认 0.30")
@@ -66,6 +69,9 @@ class SystemPage(QWidget):
         self.ed_weight_citation = QLineEdit()
         self.ed_weight_citation.setPlaceholderText("默认 0.05")
 
+        self.cb_sentence_transformer_model = QComboBox()
+        self.cb_sentence_transformer_model.addItems(SENTENCE_TRANSFORMER_MODEL_OPTIONS)
+
         form.addRow("最终输出论文数量", self.ed_final_output)
         form.addRow("第一个Prompt默认max_results", self.ed_arxiv_api_default)
         form.addRow("arXiv API 输出论文数量", self.ed_arxiv_fetch)
@@ -74,6 +80,7 @@ class SystemPage(QWidget):
         form.addRow("权重 novelty", self.ed_weight_novelty)
         form.addRow("权重 recency", self.ed_weight_recency)
         form.addRow("权重 citation", self.ed_weight_citation)
+        form.addRow("语义筛选模型", self.cb_sentence_transformer_model)
         form_wrap.addLayout(form)
         root.addStretch(1)
 
@@ -89,39 +96,44 @@ class SystemPage(QWidget):
         self._final_output_paper_count = max(1, min(50, self._final_output_paper_count))
 
         try:
-            self._arxiv_api_default_max_results = int(system_cfg.get("arxiv_api_default_max_results", 40))
+            self._arxiv_api_default_max_results = int(system_cfg.get("arxiv_api_default_max_results", 30))
         except Exception:
-            self._arxiv_api_default_max_results = 40
+            self._arxiv_api_default_max_results = 30
         self._arxiv_api_default_max_results = max(5, min(300, self._arxiv_api_default_max_results))
 
         try:
-            self._arxiv_fetch_max_results = int(system_cfg.get("arxiv_fetch_max_results", 60))
+            self._arxiv_fetch_max_results = int(system_cfg.get("arxiv_fetch_max_results", 40))
         except Exception:
-            self._arxiv_fetch_max_results = 60
+            self._arxiv_fetch_max_results = 40
         self._arxiv_fetch_max_results = max(5, min(300, self._arxiv_fetch_max_results))
 
         try:
-            self._second_prompt_truncate_count = int(system_cfg.get("second_prompt_truncate_count", 80))
+            self._second_prompt_truncate_count = int(system_cfg.get("second_prompt_truncate_count", 40))
         except Exception:
-            self._second_prompt_truncate_count = 80
+            self._second_prompt_truncate_count = 40
         self._second_prompt_truncate_count = max(5, min(200, self._second_prompt_truncate_count))
 
         try:
-            self._weight_relevance = float(system_cfg.get("weight_relevance", 0.55))
+            self._weight_relevance = float(system_cfg.get("weight_relevance", 0.50))
         except Exception:
-            self._weight_relevance = 0.55
+            self._weight_relevance = 0.50
         try:
-            self._weight_novelty = float(system_cfg.get("weight_novelty", 0.30))
+            self._weight_novelty = float(system_cfg.get("weight_novelty", 0.25))
         except Exception:
-            self._weight_novelty = 0.30
+            self._weight_novelty = 0.25
         try:
-            self._weight_recency = float(system_cfg.get("weight_recency", 0.10))
+            self._weight_recency = float(system_cfg.get("weight_recency", 0.20))
         except Exception:
-            self._weight_recency = 0.10
+            self._weight_recency = 0.20
         try:
             self._weight_citation = float(system_cfg.get("weight_citation", 0.05))
         except Exception:
             self._weight_citation = 0.05
+
+        selected_model = str(system_cfg.get("sentence_transformer_model", "BAAI/bge-large-en-v1.5") or "").strip()
+        if selected_model not in SENTENCE_TRANSFORMER_MODEL_OPTIONS:
+            selected_model = "BAAI/bge-large-en-v1.5"
+        self._sentence_transformer_model = selected_model
 
         self.ed_final_output.setText(str(self._final_output_paper_count))
         self.ed_arxiv_api_default.setText(str(self._arxiv_api_default_max_results))
@@ -131,6 +143,7 @@ class SystemPage(QWidget):
         self.ed_weight_novelty.setText(f"{self._weight_novelty:.2f}")
         self.ed_weight_recency.setText(f"{self._weight_recency:.2f}")
         self.ed_weight_citation.setText(f"{self._weight_citation:.2f}")
+        self.cb_sentence_transformer_model.setCurrentText(self._sentence_transformer_model)
 
     def dump(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         system_cfg = settings.setdefault("system", {}) if isinstance(settings, dict) else {}
@@ -143,6 +156,7 @@ class SystemPage(QWidget):
             system_cfg["weight_novelty"] = round(self._weight_novelty, 4)
             system_cfg["weight_recency"] = round(self._weight_recency, 4)
             system_cfg["weight_citation"] = round(self._weight_citation, 4)
+            system_cfg["sentence_transformer_model"] = self._sentence_transformer_model
         return settings
 
     def validate_or_warn(self, parent=None) -> bool:
@@ -162,19 +176,19 @@ class SystemPage(QWidget):
             return False
 
         try:
-            api_default_count = int(api_default_text or "40")
+            api_default_count = int(api_default_text or "30")
         except Exception:
             QMessageBox.warning(parent, "提示", "第一个Prompt默认max_results必须是整数。")
             return False
 
         try:
-            fetch_count = int(fetch_text or "60")
+            fetch_count = int(fetch_text or "40")
         except Exception:
             QMessageBox.warning(parent, "提示", "arXiv API 输出论文数量必须是整数。")
             return False
 
         try:
-            second_truncate_count = int(second_truncate_text or "80")
+            second_truncate_count = int(second_truncate_text or "40")
         except Exception:
             QMessageBox.warning(parent, "提示", "第二个Prompt截断数量必须是整数。")
             return False
@@ -200,9 +214,9 @@ class SystemPage(QWidget):
             return False
 
         try:
-            wr = float(wr_text or "0.55")
-            wn = float(wn_text or "0.30")
-            wre = float(wre_text or "0.10")
+            wr = float(wr_text or "0.50")
+            wn = float(wn_text or "0.25")
+            wre = float(wre_text or "0.20")
             wc = float(wc_text or "0.05")
         except Exception:
             QMessageBox.warning(parent, "提示", "四个权重必须是数字。")
@@ -226,4 +240,9 @@ class SystemPage(QWidget):
         self._weight_novelty = wn
         self._weight_recency = wre
         self._weight_citation = wc
+        selected_model = str(self.cb_sentence_transformer_model.currentText() or "").strip()
+        if selected_model not in SENTENCE_TRANSFORMER_MODEL_OPTIONS:
+            QMessageBox.warning(parent, "提示", "语义筛选模型无效，请重新选择。")
+            return False
+        self._sentence_transformer_model = selected_model
         return True
