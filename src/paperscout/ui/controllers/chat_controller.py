@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -69,6 +70,42 @@ class ChatController:
                 .replace("'", "&#39;")
             )
 
+        def linkify_text(s: str) -> str:
+            text = esc(s)
+
+            md_pat = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+            placeholders: List[str] = []
+
+            def md_repl(match: re.Match) -> str:
+                label = match.group(1)
+                url = match.group(2)
+                idx = len(placeholders)
+                placeholders.append(
+                    f'<a href="{url}" style="color:#1677ff; text-decoration:underline;">{label}</a>'
+                )
+                return f"§§LINK{idx}§§"
+
+            text = md_pat.sub(md_repl, text)
+
+            url_pat = re.compile(r"(?<![\"'=])(https?://[^\s<]+)")
+
+            def url_repl(match: re.Match) -> str:
+                url = match.group(1)
+                tail = ""
+                while url and url[-1] in ".,;:!?)":
+                    tail = url[-1] + tail
+                    url = url[:-1]
+                if not url:
+                    return match.group(1)
+                return f'<a href="{url}" style="color:#1677ff; text-decoration:underline;">{url}</a>{tail}'
+
+            text = url_pat.sub(url_repl, text)
+
+            for idx, html in enumerate(placeholders):
+                text = text.replace(f"§§LINK{idx}§§", html)
+
+            return text
+
         msgs = self.messages(session_id)
 
         parts = ['<div style="padding:12px 14px; font-family: sans-serif;">']
@@ -97,7 +134,7 @@ class ChatController:
                   <div style="margin:10px 0; display:flex; justify-content:flex-start;">
                     <div style="max-width:70%; background:#f2f4f7; color:#111; padding:10px 12px; border-radius:14px;">
                       <div style="font-size:12px; color:#666; margin-bottom:4px;">助手 · {t}</div>
-                      <div style="white-space:pre-wrap;">{esc(m.text)}</div>
+                                            <div style="white-space:pre-wrap;">{linkify_text(m.text)}</div>
                     </div>
                   </div>
                 """
@@ -106,7 +143,7 @@ class ChatController:
                 parts.append(
                     f"""
                   <div style="margin:10px 0; text-align:center; color:#888; font-size:12px;">
-                    {t} · {esc(m.text)}
+                                        {t} · {linkify_text(m.text)}
                   </div>
                 """
                 )

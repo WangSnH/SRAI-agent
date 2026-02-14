@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
-from paperscout.config.settings import get_profile_agent_info
+from paperscout.config.settings import get_profile_agent_info, get_system_param_float, get_system_param_int
 from paperscout.services.prompts.arxiv_prompts import (
     OPENAI_ARXIV_API_PROMPT_TEMPLATE,
     OPENAI_ARXIV_API_SYSTEM_PROMPT,
@@ -29,6 +29,10 @@ OPENAI_SYSTEM_PROMPT = (
     "你是 PaperScout 的聊天助手（OpenAI）。"
     "请基于用户输入与历史对话给出清晰、可执行的回答。"
 )
+
+
+def _contains_cjk(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", str(text or "")))
 
 
 def _active_profile(settings: Dict[str, Any]) -> Dict[str, Any]:
@@ -94,6 +98,52 @@ def _chat_complete(
         return ""
 
 
+def translate_input_for_retrieval(settings: Dict[str, Any], text: str) -> str:
+    """Translate Chinese user input into concise English retrieval query.
+
+    This is best-effort and will always fall back to the original input on failure.
+    """
+    src = str(text or "").strip()
+    if not src:
+        return ""
+    if not _contains_cjk(src):
+        return src
+
+    try:
+        profile = _active_profile(settings)
+        openai_cfg = _agent_cfg(profile, "openai")
+        api_key = str(openai_cfg.get("api_key") or "").strip()
+        base_url = str(openai_cfg.get("base_url") or "").strip()
+        model = str(openai_cfg.get("model") or "").strip()
+        if not api_key or not model:
+            return src
+
+        client = _mk_client(api_key, base_url)
+        translated = _chat_complete(
+            client,
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a translation assistant for academic retrieval. "
+                        "Translate Chinese input into concise, precise English query text for searching papers. "
+                        "Return plain English only, no markdown, no explanation."
+                    ),
+                },
+                {"role": "user", "content": src},
+            ],
+            temperature=0.0,
+            top_p=1.0,
+            max_tokens=220,
+            timeout_sec=20.0,
+        )
+        translated = str(translated or "").strip()
+        return translated or src
+    except Exception:
+        return src
+
+
 def _extract_first_json_object(text: str) -> str:
     s = (text or "").strip()
     if not s:
@@ -110,31 +160,33 @@ def _extract_first_json_object(text: str) -> str:
     return ""
 
 
-def _normalize_arxiv_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_arxiv_payload(payload: Dict[str, Any], default_max_results: int = 20) -> Dict[str, Any]:
     raw_arxiv = payload.get("arxiv") if isinstance(payload, dict) else {}
     arxiv = raw_arxiv if isinstance(raw_arxiv, dict) else {}
 
     categories = arxiv.get("categories")
     keywords = arxiv.get("keywords")
-    max_results = arxiv.get("max_results", 20)
+    max_results = arxiv.get("max_results", default_max_results)
 
     if not isinstance(categories, list):
         categories = ["cs.AI", "cs.LG"]
     if not isinstance(keywords, list):
-        keywords = ["large language model", "transformer", "agent"]
+        keywords = ["large language model", "transformer"]
 
     categories = [str(x).strip() for x in categories if str(x).strip()]
     keywords = [str(x).strip() for x in keywords if str(x).strip()]
+    categories = categories[:2]
+    keywords = keywords[:2]
     if not categories:
         categories = ["cs.AI", "cs.LG"]
     if not keywords:
-        keywords = ["large language model", "transformer", "agent"]
+        keywords = ["large language model", "transformer"]
 
     try:
         max_results_i = int(max_results)
     except Exception:
-        max_results_i = 20
-    max_results_i = max(1, min(100, max_results_i))
+        max_results_i = int(default_max_results)
+    max_results_i = max(1, min(300, max_results_i))
 
     return {
         "arxiv": {
@@ -163,12 +215,15 @@ def generate_arxiv_api_payload(
     if not api_key:
         raise RuntimeError("OpenAI API Key 为空（请在设置里配置）")
 
+    default_max_results = get_system_param_int(settings, "arxiv_api_default_max_results", 40, 5, 300)
+
     client = _mk_client(api_key, base_url)
     try:
         prompt = OPENAI_ARXIV_API_PROMPT_TEMPLATE.format(
             feature_key=feature_key or "arxiv",
             thread_name=thread_name or "新对话",
             original_input=(original_input or thread_name or "").strip(),
+            default_max_results=default_max_results,
         )
     except Exception as e:
         raise RuntimeError(f"arXiv 参数 Prompt 模板格式化失败：{e}") from e
@@ -186,21 +241,46 @@ def generate_arxiv_api_payload(
     )
 
     if not raw:
-        return _normalize_arxiv_payload({})
+        return _normalize_arxiv_payload({}, default_max_results=default_max_results)
 
     json_text = _extract_first_json_object(raw)
     if not json_text:
-        return _normalize_arxiv_payload({})
+        return _normalize_arxiv_payload({}, default_max_results=default_max_results)
 
     try:
         parsed = json.loads(json_text)
     except Exception:
-        return _normalize_arxiv_payload({})
+        return _normalize_arxiv_payload({}, default_max_results=default_max_results)
 
-    return _normalize_arxiv_payload(parsed if isinstance(parsed, dict) else {})
+    return _normalize_arxiv_payload(
+        parsed if isinstance(parsed, dict) else {},
+        default_max_results=default_max_results,
+    )
+
+def _compare_weights(settings: Dict[str, Any]) -> Dict[str, float]:
+    wr = get_system_param_float(settings, "weight_relevance", 0.55, 0.0, 1_000_000.0)
+    wn = get_system_param_float(settings, "weight_novelty", 0.30, 0.0, 1_000_000.0)
+    wre = get_system_param_float(settings, "weight_recency", 0.10, 0.0, 1_000_000.0)
+    wc = get_system_param_float(settings, "weight_citation", 0.05, 0.0, 1_000_000.0)
+
+    total = wr + wn + wre + wc
+    if total <= 1e-9:
+        return {
+            "relevance": 0.55,
+            "novelty": 0.30,
+            "recency": 0.10,
+            "citation": 0.05,
+        }
+
+    return {
+        "relevance": wr / total,
+        "novelty": wn / total,
+        "recency": wre / total,
+        "citation": wc / total,
+    }
 
 
-def _normalize_compare_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_compare_payload(payload: Dict[str, Any], weights: Dict[str, float]) -> Dict[str, Any]:
     summary = str(payload.get("summary") or "").strip()
     top_matches = payload.get("top_matches")
 
@@ -212,11 +292,6 @@ def _normalize_compare_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             pid = str(item.get("id") or "").strip()
             title = str(item.get("title") or "").strip()
             reason = str(item.get("reason") or "").strip()
-            try:
-                score = float(item.get("score", 0.0))
-            except Exception:
-                score = 0.0
-            score = max(0.0, min(1.0, score))
 
             details = item.get("score_details")
             details = details if isinstance(details, dict) else {}
@@ -229,22 +304,38 @@ def _normalize_compare_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
                 return max(0.0, min(1.0, v))
 
             if pid or title:
+                details_payload = {
+                    "relevance": round(_d("relevance"), 4),
+                    "recency": round(_d("recency"), 4),
+                    "novelty": round(_d("novelty"), 4),
+                    "citation": round(_d("citation"), 4),
+                }
+                weighted_score = (
+                    details_payload["relevance"] * float(weights.get("relevance", 0.55))
+                    + details_payload["novelty"] * float(weights.get("novelty", 0.30))
+                    + details_payload["recency"] * float(weights.get("recency", 0.10))
+                    + details_payload["citation"] * float(weights.get("citation", 0.05))
+                )
                 normalized_matches.append(
                     {
                         "id": pid,
                         "title": title,
                         "reason": reason,
-                        "score": round(score, 4),
-                        "score_details": {
-                            "relevance": round(_d("relevance"), 4),
-                            "recency": round(_d("recency"), 4),
-                            "novelty": round(_d("novelty"), 4),
-                            "citation": round(_d("citation"), 4),
-                        },
+                        "score": round(weighted_score, 4),
+                        "score_details": details_payload,
                     }
                 )
 
-    normalized_matches.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
+    def _priority_key(item: Dict[str, Any]) -> Tuple[float, float, float, float, float]:
+        details = item.get("score_details") if isinstance(item.get("score_details"), dict) else {}
+        relevance = float(details.get("relevance", 0.0) or 0.0)
+        novelty = float(details.get("novelty", 0.0) or 0.0)
+        recency = float(details.get("recency", 0.0) or 0.0)
+        citation = float(details.get("citation", 0.0) or 0.0)
+        score = float(item.get("score", 0.0) or 0.0)
+        return (score, relevance, novelty, recency, citation)
+
+    normalized_matches.sort(key=_priority_key, reverse=True)
     normalized_matches = normalized_matches[:5]
     selected_ids = [str(x.get("id") or "").strip() for x in normalized_matches if str(x.get("id") or "").strip()]
 
@@ -266,10 +357,13 @@ def compare_arxiv_abstracts_with_input(
             "summary": "无候选论文可比较。",
             "selected_ids": [],
             "top_matches": [],
+            "used_model": "",
+            "compare_limit": 0,
         }
 
     profile = _active_profile(settings)
     openai_cfg = _agent_cfg(profile, "openai")
+    weights = _compare_weights(settings)
 
     api_key = str(openai_cfg.get("api_key") or "").strip()
     base_url = str(openai_cfg.get("base_url") or "").strip()
@@ -280,7 +374,8 @@ def compare_arxiv_abstracts_with_input(
         raise RuntimeError("OpenAI API Key 为空（请在设置里配置）")
 
     compact_papers: List[Dict[str, Any]] = []
-    for p in papers[:20]:
+    compare_limit = get_system_param_int(settings, "second_prompt_truncate_count", 80, 5, 200)
+    for p in papers[:compare_limit]:
         if not isinstance(p, dict):
             continue
         compact_papers.append(
@@ -291,7 +386,7 @@ def compare_arxiv_abstracts_with_input(
                 "published": p.get("published", ""),
                 "categories": p.get("categories", []),
                 "citation_count": p.get("citation_count", None),
-                "tfidf_score": p.get("tfidf_score", 0.0),
+                "semantic_score": p.get("semantic_score", p.get("tfidf_score", 0.0)),
                 "url": p.get("url", ""),
             }
         )
@@ -300,6 +395,10 @@ def compare_arxiv_abstracts_with_input(
         prompt = OPENAI_ARXIV_COMPARE_PROMPT_TEMPLATE.format(
             original_input=(original_input or "").strip() or "（空）",
             papers_json=json.dumps(compact_papers, ensure_ascii=False),
+            w_relevance=f"{weights['relevance']:.2f}",
+            w_novelty=f"{weights['novelty']:.2f}",
+            w_recency=f"{weights['recency']:.2f}",
+            w_citation=f"{weights['citation']:.2f}",
         )
     except Exception as e:
         raise RuntimeError(f"arXiv 对比 Prompt 模板格式化失败：{e}") from e
@@ -322,6 +421,8 @@ def compare_arxiv_abstracts_with_input(
             "summary": "模型未返回对比结果。",
             "selected_ids": [],
             "top_matches": [],
+            "used_model": model,
+            "compare_limit": compare_limit,
         }
 
     json_text = _extract_first_json_object(raw)
@@ -330,6 +431,8 @@ def compare_arxiv_abstracts_with_input(
             "summary": raw[:300],
             "selected_ids": [],
             "top_matches": [],
+            "used_model": model,
+            "compare_limit": compare_limit,
         }
 
     try:
@@ -339,6 +442,8 @@ def compare_arxiv_abstracts_with_input(
             "summary": raw[:300],
             "selected_ids": [],
             "top_matches": [],
+            "used_model": model,
+            "compare_limit": compare_limit,
         }
 
     if not isinstance(parsed, dict):
@@ -346,9 +451,13 @@ def compare_arxiv_abstracts_with_input(
             "summary": "对比结果格式无效。",
             "selected_ids": [],
             "top_matches": [],
+            "used_model": model,
+            "compare_limit": compare_limit,
         }
-
-    return _normalize_compare_payload(parsed)
+    result = _normalize_compare_payload(parsed, weights)
+    result["used_model"] = model
+    result["compare_limit"] = compare_limit
+    return result
 
 
 def organize_selected_papers_report(
@@ -360,6 +469,7 @@ def organize_selected_papers_report(
     """Third OpenAI prompt: organize selected papers into a Chinese markdown report."""
     profile = _active_profile(settings)
     openai_cfg = _agent_cfg(profile, "openai")
+    weights = _compare_weights(settings)
 
     api_key = str(openai_cfg.get("api_key") or "").strip()
     base_url = str(openai_cfg.get("base_url") or "").strip()
@@ -387,6 +497,10 @@ def organize_selected_papers_report(
     try:
         prompt = OPENAI_ARXIV_ORGANIZE_PROMPT_TEMPLATE.format(
             original_input=(original_input or "").strip() or "（空）",
+            w_relevance=f"{weights['relevance']:.2f}",
+            w_novelty=f"{weights['novelty']:.2f}",
+            w_recency=f"{weights['recency']:.2f}",
+            w_citation=f"{weights['citation']:.2f}",
             compare_result_json=json.dumps(compare_result or {}, ensure_ascii=False),
             papers_json=json.dumps(compact_papers, ensure_ascii=False),
         )

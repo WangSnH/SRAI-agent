@@ -256,6 +256,22 @@ class MainWindow(QMainWindow):
 
             # 仅输出第三个 prompt 的最终整理结果；不展示第一、第二个 prompt 的结果
             final_report = str(init_meta.get("arxiv_organized_report") or "").strip() or (summary or "初始化完成。")
+            system_cfg = (self.settings.get("system", {}) or {}) if isinstance(self.settings, dict) else {}
+            if not isinstance(system_cfg, dict):
+                system_cfg = {}
+
+            api_default = int(system_cfg.get("arxiv_api_default_max_results", 40) or 40)
+            second_limit = int(system_cfg.get("second_prompt_truncate_count", 80) or 80)
+            arxiv_output = int(system_cfg.get("arxiv_fetch_max_results", 60) or 60)
+
+            compare_result = init_meta.get("arxiv_compare_result") if isinstance(init_meta.get("arxiv_compare_result"), dict) else {}
+            used_model = str(compare_result.get("used_model") or "").strip() or "未获取"
+
+            header_line = (
+                f"参数：max_results默认={api_default}；第二Prompt截断={second_limit}；"
+                f"arXiv输出数量={arxiv_output}；第二Prompt模型={used_model}"
+            )
+            final_report = f"{header_line}\n\n{final_report}"
             self.chat.add("assistant", final_report, session_id=thread_id)
 
             # 如果有错误也提示一下

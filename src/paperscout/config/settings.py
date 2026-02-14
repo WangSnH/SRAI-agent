@@ -90,7 +90,13 @@ DEFAULT_AGENT_CFG = {
 
 DEFAULT_SYSTEM_CFG = {
     "final_output_paper_count": 5,
-    "arxiv_fetch_max_results": 20,
+    "arxiv_api_default_max_results": 40,
+    "arxiv_fetch_max_results": 60,
+    "second_prompt_truncate_count": 80,
+    "weight_relevance": 0.55,
+    "weight_novelty": 0.30,
+    "weight_recency": 0.10,
+    "weight_citation": 0.05,
 }
 
 # ===========================
@@ -254,6 +260,18 @@ def get_system_param_int(
 ) -> int:
     system_cfg = (settings.get("system", {}) or {}) if isinstance(settings, dict) else {}
     value = _safe_int(system_cfg.get(key), default) if isinstance(system_cfg, dict) else default
+    return max(min_value, min(max_value, value))
+
+
+def get_system_param_float(
+    settings: Dict[str, Any],
+    key: str,
+    default: float,
+    min_value: float,
+    max_value: float,
+) -> float:
+    system_cfg = (settings.get("system", {}) or {}) if isinstance(settings, dict) else {}
+    value = _safe_float(system_cfg.get(key), default) if isinstance(system_cfg, dict) else default
     return max(min_value, min(max_value, value))
 
 
@@ -615,8 +633,11 @@ def load_settings() -> Dict[str, Any]:
     system_cfg = data.get("system") if isinstance(data, dict) else {}
     system_cfg = system_cfg if isinstance(system_cfg, dict) else {}
     merged_system = _deep_copy(DEFAULT_SYSTEM_CFG)
-    for k in merged_system.keys():
-        merged_system[k] = _safe_int(system_cfg.get(k), merged_system[k])
+    for k, default_value in merged_system.items():
+        if isinstance(default_value, float):
+            merged_system[k] = _safe_float(system_cfg.get(k), default_value)
+        else:
+            merged_system[k] = _safe_int(system_cfg.get(k), default_value)
     data["system"] = merged_system
     
     return data

@@ -10,7 +10,13 @@ class SystemPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._final_output_paper_count = 5
-        self._arxiv_fetch_max_results = 20
+        self._arxiv_api_default_max_results = 40
+        self._arxiv_fetch_max_results = 60
+        self._second_prompt_truncate_count = 80
+        self._weight_relevance = 0.55
+        self._weight_novelty = 0.30
+        self._weight_recency = 0.10
+        self._weight_citation = 0.05
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 16)
@@ -20,7 +26,7 @@ class SystemPage(QWidget):
         title.setStyleSheet("font-weight:700; font-size:14px;")
         root.addWidget(title)
 
-        tip = QLabel("配置初始化流程中的默认论文数量参数。")
+        tip = QLabel("配置初始化流程参数与评分权重（权重会自动归一化）。")
         tip.setStyleSheet("color:#666;")
         root.addWidget(tip)
 
@@ -39,11 +45,35 @@ class SystemPage(QWidget):
         self.ed_final_output = QLineEdit()
         self.ed_final_output.setPlaceholderText("默认 5（范围 1~50）")
 
+        self.ed_arxiv_api_default = QLineEdit()
+        self.ed_arxiv_api_default.setPlaceholderText("默认 40（范围 5~300）")
+
         self.ed_arxiv_fetch = QLineEdit()
-        self.ed_arxiv_fetch.setPlaceholderText("默认 20（范围 5~100）")
+        self.ed_arxiv_fetch.setPlaceholderText("默认 60（范围 5~300）")
+
+        self.ed_second_prompt_truncate = QLineEdit()
+        self.ed_second_prompt_truncate.setPlaceholderText("默认 80（范围 5~200）")
+
+        self.ed_weight_relevance = QLineEdit()
+        self.ed_weight_relevance.setPlaceholderText("默认 0.55")
+
+        self.ed_weight_novelty = QLineEdit()
+        self.ed_weight_novelty.setPlaceholderText("默认 0.30")
+
+        self.ed_weight_recency = QLineEdit()
+        self.ed_weight_recency.setPlaceholderText("默认 0.10")
+
+        self.ed_weight_citation = QLineEdit()
+        self.ed_weight_citation.setPlaceholderText("默认 0.05")
 
         form.addRow("最终输出论文数量", self.ed_final_output)
+        form.addRow("第一个Prompt默认max_results", self.ed_arxiv_api_default)
         form.addRow("arXiv API 输出论文数量", self.ed_arxiv_fetch)
+        form.addRow("第二个Prompt截断数量", self.ed_second_prompt_truncate)
+        form.addRow("权重 relevance", self.ed_weight_relevance)
+        form.addRow("权重 novelty", self.ed_weight_novelty)
+        form.addRow("权重 recency", self.ed_weight_recency)
+        form.addRow("权重 citation", self.ed_weight_citation)
         form_wrap.addLayout(form)
         root.addStretch(1)
 
@@ -59,24 +89,71 @@ class SystemPage(QWidget):
         self._final_output_paper_count = max(1, min(50, self._final_output_paper_count))
 
         try:
-            self._arxiv_fetch_max_results = int(system_cfg.get("arxiv_fetch_max_results", 20))
+            self._arxiv_api_default_max_results = int(system_cfg.get("arxiv_api_default_max_results", 40))
         except Exception:
-            self._arxiv_fetch_max_results = 20
-        self._arxiv_fetch_max_results = max(5, min(100, self._arxiv_fetch_max_results))
+            self._arxiv_api_default_max_results = 40
+        self._arxiv_api_default_max_results = max(5, min(300, self._arxiv_api_default_max_results))
+
+        try:
+            self._arxiv_fetch_max_results = int(system_cfg.get("arxiv_fetch_max_results", 60))
+        except Exception:
+            self._arxiv_fetch_max_results = 60
+        self._arxiv_fetch_max_results = max(5, min(300, self._arxiv_fetch_max_results))
+
+        try:
+            self._second_prompt_truncate_count = int(system_cfg.get("second_prompt_truncate_count", 80))
+        except Exception:
+            self._second_prompt_truncate_count = 80
+        self._second_prompt_truncate_count = max(5, min(200, self._second_prompt_truncate_count))
+
+        try:
+            self._weight_relevance = float(system_cfg.get("weight_relevance", 0.55))
+        except Exception:
+            self._weight_relevance = 0.55
+        try:
+            self._weight_novelty = float(system_cfg.get("weight_novelty", 0.30))
+        except Exception:
+            self._weight_novelty = 0.30
+        try:
+            self._weight_recency = float(system_cfg.get("weight_recency", 0.10))
+        except Exception:
+            self._weight_recency = 0.10
+        try:
+            self._weight_citation = float(system_cfg.get("weight_citation", 0.05))
+        except Exception:
+            self._weight_citation = 0.05
 
         self.ed_final_output.setText(str(self._final_output_paper_count))
+        self.ed_arxiv_api_default.setText(str(self._arxiv_api_default_max_results))
         self.ed_arxiv_fetch.setText(str(self._arxiv_fetch_max_results))
+        self.ed_second_prompt_truncate.setText(str(self._second_prompt_truncate_count))
+        self.ed_weight_relevance.setText(f"{self._weight_relevance:.2f}")
+        self.ed_weight_novelty.setText(f"{self._weight_novelty:.2f}")
+        self.ed_weight_recency.setText(f"{self._weight_recency:.2f}")
+        self.ed_weight_citation.setText(f"{self._weight_citation:.2f}")
 
     def dump(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         system_cfg = settings.setdefault("system", {}) if isinstance(settings, dict) else {}
         if isinstance(system_cfg, dict):
             system_cfg["final_output_paper_count"] = self._final_output_paper_count
+            system_cfg["arxiv_api_default_max_results"] = self._arxiv_api_default_max_results
             system_cfg["arxiv_fetch_max_results"] = self._arxiv_fetch_max_results
+            system_cfg["second_prompt_truncate_count"] = self._second_prompt_truncate_count
+            system_cfg["weight_relevance"] = round(self._weight_relevance, 4)
+            system_cfg["weight_novelty"] = round(self._weight_novelty, 4)
+            system_cfg["weight_recency"] = round(self._weight_recency, 4)
+            system_cfg["weight_citation"] = round(self._weight_citation, 4)
         return settings
 
     def validate_or_warn(self, parent=None) -> bool:
         final_text = str(self.ed_final_output.text() or "").strip()
+        api_default_text = str(self.ed_arxiv_api_default.text() or "").strip()
         fetch_text = str(self.ed_arxiv_fetch.text() or "").strip()
+        second_truncate_text = str(self.ed_second_prompt_truncate.text() or "").strip()
+        wr_text = str(self.ed_weight_relevance.text() or "").strip()
+        wn_text = str(self.ed_weight_novelty.text() or "").strip()
+        wre_text = str(self.ed_weight_recency.text() or "").strip()
+        wc_text = str(self.ed_weight_citation.text() or "").strip()
 
         try:
             final_count = int(final_text or "5")
@@ -85,23 +162,68 @@ class SystemPage(QWidget):
             return False
 
         try:
-            fetch_count = int(fetch_text or "20")
+            api_default_count = int(api_default_text or "40")
+        except Exception:
+            QMessageBox.warning(parent, "提示", "第一个Prompt默认max_results必须是整数。")
+            return False
+
+        try:
+            fetch_count = int(fetch_text or "60")
         except Exception:
             QMessageBox.warning(parent, "提示", "arXiv API 输出论文数量必须是整数。")
+            return False
+
+        try:
+            second_truncate_count = int(second_truncate_text or "80")
+        except Exception:
+            QMessageBox.warning(parent, "提示", "第二个Prompt截断数量必须是整数。")
             return False
 
         if final_count < 1 or final_count > 50:
             QMessageBox.warning(parent, "提示", "最终输出论文数量范围应为 1~50。")
             return False
 
-        if fetch_count < 5 or fetch_count > 100:
-            QMessageBox.warning(parent, "提示", "arXiv API 输出论文数量范围应为 5~100。")
+        if api_default_count < 5 or api_default_count > 300:
+            QMessageBox.warning(parent, "提示", "第一个Prompt默认max_results范围应为 5~300。")
+            return False
+
+        if fetch_count < 5 or fetch_count > 300:
+            QMessageBox.warning(parent, "提示", "arXiv API 输出论文数量范围应为 5~300。")
+            return False
+
+        if second_truncate_count < 5 or second_truncate_count > 200:
+            QMessageBox.warning(parent, "提示", "第二个Prompt截断数量范围应为 5~200。")
             return False
 
         if fetch_count < final_count:
             QMessageBox.warning(parent, "提示", "arXiv API 输出论文数量不能小于最终输出论文数量。")
             return False
 
+        try:
+            wr = float(wr_text or "0.55")
+            wn = float(wn_text or "0.30")
+            wre = float(wre_text or "0.10")
+            wc = float(wc_text or "0.05")
+        except Exception:
+            QMessageBox.warning(parent, "提示", "四个权重必须是数字。")
+            return False
+
+        weights = [wr, wn, wre, wc]
+        if any(x < 0.0 for x in weights):
+            QMessageBox.warning(parent, "提示", "四个权重必须为非负数。")
+            return False
+
+        total = sum(weights)
+        if total <= 0.0:
+            QMessageBox.warning(parent, "提示", "四个权重之和必须大于 0。")
+            return False
+
         self._final_output_paper_count = final_count
+        self._arxiv_api_default_max_results = api_default_count
         self._arxiv_fetch_max_results = fetch_count
+        self._second_prompt_truncate_count = second_truncate_count
+        self._weight_relevance = wr
+        self._weight_novelty = wn
+        self._weight_recency = wre
+        self._weight_citation = wc
         return True

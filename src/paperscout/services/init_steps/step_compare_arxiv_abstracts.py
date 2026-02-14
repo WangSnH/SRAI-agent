@@ -18,11 +18,15 @@ class StepCompareArxivAbstracts(InitStep):
         original_input = str(ctx.data.get("original_input") or ctx.original_input or "").strip()
         if not original_input:
             original_input = str(ctx.thread_name or "").strip()
+        normalized_input_en = str(ctx.data.get("original_input_en") or "").strip()
+        compare_input = original_input
+        if normalized_input_en and normalized_input_en != original_input:
+            compare_input = f"{original_input}\n\n[English retrieval query]\n{normalized_input_en}"
 
         try:
             result = compare_arxiv_abstracts_with_input(
                 settings=ctx.settings,
-                original_input=original_input,
+                original_input=compare_input,
                 papers=[p for p in papers if isinstance(p, dict)],
             )
             result = result if isinstance(result, dict) else {}

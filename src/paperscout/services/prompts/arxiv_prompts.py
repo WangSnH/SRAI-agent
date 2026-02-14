@@ -13,19 +13,19 @@ OPENAI_ARXIV_API_PROMPT_TEMPLATE = (
     "输出要求：\n"
     "1) 只输出 JSON，对象结构必须是："
     "{{\"arxiv\": {{\"categories\": [\"...\"], \"keywords\": [\"...\"], \"max_results\": 20}}}}\n"
-    "2) categories 需使用 arXiv 分类（如 cs.AI/cs.LG）。\n"
-    "3) keywords 提供 3-8 个英文关键词。\n"
-    "4) max_results 为 默认 20。\n"
+    "2) categories 需使用 arXiv 分类（如 cs.AI/cs.LG），最多 2 个。\n"
+    "3) keywords 提供英文关键词，最多 2 个。\n"
+    "4) max_results 默认值使用 {default_max_results}。\n"
     "5) 禁止输出 Markdown 代码块。\n"
     "示例（仅示意内容，不要照抄）：\n"
-    "输入：为我查询20条基于transformer的大语言模型相关论文。\n"
-    "输出(JSON)：{{\"arxiv\":{{\"categories\":[\"cs.AI\",\"cs.LG\"],\"keywords\":[\"large language model\",\"transformer\",\"agent\"],\"max_results\":20}}}}"
+    "输入：为我查询若干条基于transformer的大语言模型相关论文。\n"
+    "输出(JSON)：{{\"arxiv\":{{\"categories\":[\"cs.AI\",\"cs.LG\"],\"keywords\":[\"large language model\",\"transformer\"],\"max_results\":40}}}}"
 )
 
 
 OPENAI_ARXIV_COMPARE_SYSTEM_PROMPT = (
     "你是论文相关性评估助手。"
-    "你需要将候选论文摘要与用户原始输入进行对比，并综合发布时间、创新性、引用量进行打分。"
+    "你需要将候选论文摘要与用户原始输入进行对比，并严格按“相关性优先，其次创新性，最后时间新近度”的顺序打分与排序。"
 )
 
 OPENAI_ARXIV_COMPARE_PROMPT_TEMPLATE = (
@@ -35,22 +35,25 @@ OPENAI_ARXIV_COMPARE_PROMPT_TEMPLATE = (
     "输出要求：\n"
     "1) 只输出 JSON，结构必须为："
     "{{\"summary\":\"...\",\"top_matches\":[{{\"id\":\"...\",\"title\":\"...\",\"reason\":\"...\",\"score\":0.0,\"score_details\":{{\"relevance\":0.0,\"recency\":0.0,\"novelty\":0.0,\"citation\":0.0}}}}],\"selected_ids\":[\"...\"]}}\n"
-    "2) 对每篇论文按四个维度评分（0~1）：relevance(与原始输入相关性)、recency(发布时间新近度)、novelty(方法创新性)、citation(引用影响力)。\n"
-    "3) 总分 score 也在 0~1。\n"
-    "4) 必须只保留并返回总分最高的 5 篇（top_matches 长度固定为 5，候选不足时按实际数量）。\n"
-    "5) 如果 citation_count 缺失，请按 0.5 的中性分处理 citation 维度。\n"
-    "6) 禁止输出 Markdown 代码块。"
+    "2) 对每篇论文按四个维度评分（0~1）：relevance(与原始输入相关性)、novelty(方法创新性)、recency(发布时间新近度)、citation(引用影响力)。\n"
+    "3) 总分 score 也在 0~1，并按以下权重计算：score = {w_relevance}*relevance + {w_novelty}*novelty + {w_recency}*recency + {w_citation}*citation。\n"
+    "4) 最终排序必须先看 relevance，再看 novelty，再看 recency；citation 仅作弱辅助，不可主导排序。\n"
+    "5) 必须只保留并返回总分最高的 5 篇（top_matches 长度固定为 5，候选不足时按实际数量）。\n"
+    "6) 如果 citation_count 缺失，请按 0.5 的中性分处理 citation 维度。\n"
+    "7) 禁止输出 Markdown 代码块。"
 )
 
 
 OPENAI_ARXIV_ORGANIZE_SYSTEM_PROMPT = (
     "你是中文学术综述助手。"
     "请基于已筛选论文，输出结构化、可读性强的中文整理结果。"
+    "行文与排序请严格遵循：相关性优先，其次创新性，最后时间新近度。"
 )
 
 OPENAI_ARXIV_ORGANIZE_PROMPT_TEMPLATE = (
     "请将第二个 prompt 的筛选结果和论文原始信息整理为中文 Markdown。\n"
     "原始需求: {original_input}\n"
+    "评分权重: relevance={w_relevance}, novelty={w_novelty}, recency={w_recency}, citation={w_citation}\n"
     "第二个Prompt结果(JSON): {compare_result_json}\n"
     "论文数据(JSON数组): {papers_json}\n\n"
     "输出要求（必须全部满足）：\n"
@@ -63,9 +66,10 @@ OPENAI_ARXIV_ORGANIZE_PROMPT_TEMPLATE = (
     "   - 文章摘要（精炼重述）\n"
     "   - 简要点评（2~3 句）\n"
     "   - 可直达链接（url）\n"
-    "4) 先给一个“总体总结点评”，再分条列出论文。\n"
-    "5) 避免废话，重点突出与原始需求的相关性。\n"
-    "6) 禁止输出 Markdown 代码块。\n\n"
+    "4) 先给一个“总体总结点评”，再分条列出论文；论文顺序必须按“相关性 > 创新性 > 时间”排列。\n"
+    "5) 每篇论文的“简要点评”必须按同一顺序展开：先写相关性，再写创新性，最后写时间因素。\n"
+    "6) 避免废话，重点突出与原始需求的相关性。\n"
+    "7) 禁止输出 Markdown 代码块。\n\n"
     "输出模板（请严格按此结构）：\n"
     "# 论文筛选整理报告\n\n"
     "## 总体总结点评\n"
