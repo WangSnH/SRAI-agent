@@ -22,5 +22,11 @@ class RuntimeContextStore:
             return default
         return str(self.thread_original_inputs.get(tid, default) or default)
 
+    def remove_thread(self, thread_id: str) -> None:
+        """Remove cached data for a deleted thread."""
+        tid = str(thread_id or "").strip()
+        if tid:
+            self.thread_original_inputs.pop(tid, None)
+
 
 runtime_store = RuntimeContextStore()

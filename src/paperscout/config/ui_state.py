@@ -12,7 +12,10 @@ from uuid import uuid4
 
 DEFAULT_FEATURES = {
     "arxiv": {"name": "爬取arxiv"},
+    "zh2en": {"name": "中译英"},
 }
+
+LEGACY_DEFAULT_THREAD_NAMES = {"默认对话"}
 
 
 def _new_thread_id() -> str:
@@ -57,16 +60,84 @@ def ensure_ui_state(settings: Dict[str, Any]) -> Dict[str, Any]:
             threads = []
             f["threads"] = threads
 
-        if not threads:
-            tid = _new_thread_id()
-            threads.append({"id": tid, "name": "默认对话"})
-            f["active_thread_id"] = tid
-
         active = str(f.get("active_thread_id") or "").strip()
-        if not active or active not in {str(x.get("id") or "").strip() for x in threads}:
+        if threads and (not active or active not in {str(x.get("id") or "").strip() for x in threads}):
             f["active_thread_id"] = str(threads[0].get("id") or "").strip()
 
     return settings
+
+
+def remove_legacy_default_threads(settings: Dict[str, Any]) -> bool:
+    """Remove legacy placeholder threads like '默认对话' from persisted UI state.
+
+    Returns:
+        True when settings are modified, otherwise False.
+    """
+    if not isinstance(settings, dict):
+        return False
+
+    ui = settings.get("ui", {})
+    if not isinstance(ui, dict):
+        return False
+
+    features = ui.get("features", {})
+    if not isinstance(features, dict):
+        return False
+
+    changed = False
+
+    for f in features.values():
+        if not isinstance(f, dict):
+            continue
+
+        threads = f.get("threads", [])
+        if not isinstance(threads, list):
+            continue
+
+        active_id = str(f.get("active_thread_id") or "").strip()
+        kept_threads = []
+        removed_any = False
+
+        for t in threads:
+            if not isinstance(t, dict):
+                kept_threads.append(t)
+                continue
+            name = str(t.get("name") or "").strip()
+            if name in LEGACY_DEFAULT_THREAD_NAMES:
+                removed_any = True
+                continue
+            kept_threads.append(t)
+
+        if removed_any:
+            f["threads"] = kept_threads
+            changed = True
+
+        valid_ids = {
+            str(t.get("id") or "").strip()
+            for t in kept_threads
+            if isinstance(t, dict)
+        }
+        first_valid_id = ""
+        for t in kept_threads:
+            if not isinstance(t, dict):
+                continue
+            tid = str(t.get("id") or "").strip()
+            if tid:
+                first_valid_id = tid
+                break
+
+        if not valid_ids:
+            new_active = ""
+        elif not active_id or active_id not in valid_ids:
+            new_active = first_valid_id
+        else:
+            new_active = active_id
+
+        if new_active != active_id:
+            f["active_thread_id"] = new_active
+            changed = True
+
+    return changed
 
 
 def list_threads(settings: Dict[str, Any], feature_key: str) -> List[Dict[str, str]]:

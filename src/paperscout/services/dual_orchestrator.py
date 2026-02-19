@@ -3,8 +3,13 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
-from paperscout.config.settings import get_profile_agent_info, get_system_param_float, get_system_param_int
+from paperscout.config.settings import get_system_param_float, get_system_param_int
+from paperscout.services.llm_client import (
+    active_profile,
+    agent_cfg,
+    chat_complete,
+    mk_client,
+)
 from paperscout.services.prompts.arxiv_prompts import (
     OPENAI_ARXIV_API_PROMPT_TEMPLATE,
     OPENAI_ARXIV_API_SYSTEM_PROMPT,
@@ -13,12 +18,6 @@ from paperscout.services.prompts.arxiv_prompts import (
     OPENAI_ARXIV_ORGANIZE_PROMPT_TEMPLATE,
     OPENAI_ARXIV_ORGANIZE_SYSTEM_PROMPT,
 )
-
-
-try:
-    from openai import OpenAI
-except Exception as e:
-    OpenAI = None  # type: ignore
 
 
 # ====== 占位：初始化 prompt（你后续再替换）======
@@ -35,67 +34,9 @@ def _contains_cjk(text: str) -> bool:
     return bool(re.search(r"[\u4e00-\u9fff]", str(text or "")))
 
 
-def _active_profile(settings: Dict[str, Any]) -> Dict[str, Any]:
-    llm = settings.get("llm", {}) if isinstance(settings, dict) else {}
-    profiles = llm.get("profiles", []) if isinstance(llm, dict) else []
-    active_id = str(llm.get("active_profile_id") or "").strip() if isinstance(llm, dict) else ""
-    if isinstance(profiles, list) and profiles:
-        if active_id:
-            for p in profiles:
-                if isinstance(p, dict) and str(p.get("id") or "").strip() == active_id:
-                    return p
-        return profiles[0] if isinstance(profiles[0], dict) else {}
-    return {}
-
-
-def _agent_cfg(profile: Dict[str, Any], provider: str) -> Dict[str, Any]:
-    """Return agent config with API key resolved from keyring if configured."""
-    try:
-        cfg = get_profile_agent_info(profile, provider)
-        return cfg if isinstance(cfg, dict) else {}
-    except Exception:
-        # fallback to raw dict (best effort)
-        agents = profile.get("agents", {}) if isinstance(profile, dict) else {}
-        if not isinstance(agents, dict):
-            return {}
-        raw = agents.get(provider, {})
-        return raw if isinstance(raw, dict) else {}
-
-
-
-def _mk_client(api_key: str, base_url: str) -> Any:
-    if OpenAI is None:
-        raise RuntimeError("缺少依赖 openai，请先安装：pip install openai>=1.0")
-    normalized = str(base_url or "").strip()
-    if normalized:
-        p = urlparse(normalized)
-        path = (p.path or "").strip()
-        if path in ("", "/"):
-            normalized = normalized.rstrip("/") + "/v1"
-    return OpenAI(api_key=api_key, base_url=(normalized or None), timeout=30.0, max_retries=1)
-
-
-def _chat_complete(
-    client: Any,
-    model: str,
-    messages: List[Dict[str, str]],
-    temperature: float = 0.2,
-    top_p: float = 1.0,
-    max_tokens: int = 2048,
-    timeout_sec: float = 30.0,
-) -> str:
-    resp = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=temperature,
-        top_p=top_p,
-        max_tokens=max_tokens,
-        timeout=timeout_sec,
-    )
-    try:
-        return (resp.choices[0].message.content or "").strip()
-    except Exception:
-        return ""
+def _openai_cfg(settings: Dict[str, Any]) -> Dict[str, Any]:
+    profile = active_profile(settings)
+    return agent_cfg(profile, "openai")
 
 
 def translate_input_for_retrieval(settings: Dict[str, Any], text: str) -> str:
@@ -110,16 +51,16 @@ def translate_input_for_retrieval(settings: Dict[str, Any], text: str) -> str:
         return src
 
     try:
-        profile = _active_profile(settings)
-        openai_cfg = _agent_cfg(profile, "openai")
+        profile = active_profile(settings)
+        openai_cfg = agent_cfg(profile, "openai")
         api_key = str(openai_cfg.get("api_key") or "").strip()
         base_url = str(openai_cfg.get("base_url") or "").strip()
         model = str(openai_cfg.get("model") or "").strip()
         if not api_key or not model:
             return src
 
-        client = _mk_client(api_key, base_url)
-        translated = _chat_complete(
+        client = mk_client(api_key, base_url)
+        translated = chat_complete(
             client,
             model=model,
             messages=[
@@ -204,8 +145,8 @@ def generate_arxiv_api_payload(
     original_input: str = "",
 ) -> Dict[str, Any]:
     """Use the first OpenAI init prompt to generate structured arXiv API payload."""
-    profile = _active_profile(settings)
-    openai_cfg = _agent_cfg(profile, "openai")
+    profile = active_profile(settings)
+    openai_cfg = agent_cfg(profile, "openai")
 
     api_key = str(openai_cfg.get("api_key") or "").strip()
     base_url = str(openai_cfg.get("base_url") or "").strip()
@@ -217,7 +158,7 @@ def generate_arxiv_api_payload(
 
     default_max_results = get_system_param_int(settings, "arxiv_api_default_max_results", 30, 5, 300)
 
-    client = _mk_client(api_key, base_url)
+    client = mk_client(api_key, base_url)
     try:
         prompt = OPENAI_ARXIV_API_PROMPT_TEMPLATE.format(
             feature_key=feature_key or "arxiv",
@@ -228,7 +169,7 @@ def generate_arxiv_api_payload(
     except Exception as e:
         raise RuntimeError(f"arXiv 参数 Prompt 模板格式化失败：{e}") from e
 
-    raw = _chat_complete(
+    raw = chat_complete(
         client,
         model=model,
         messages=[
@@ -362,8 +303,8 @@ def compare_arxiv_abstracts_with_input(
             "compare_limit": 0,
         }
 
-    profile = _active_profile(settings)
-    openai_cfg = _agent_cfg(profile, "openai")
+    profile = active_profile(settings)
+    openai_cfg = agent_cfg(profile, "openai")
     weights = _compare_weights(settings)
     target_count = get_system_param_int(settings, "final_output_paper_count", 5, 1, 50)
 
@@ -406,8 +347,8 @@ def compare_arxiv_abstracts_with_input(
     except Exception as e:
         raise RuntimeError(f"arXiv 对比 Prompt 模板格式化失败：{e}") from e
 
-    client = _mk_client(api_key, base_url)
-    raw = _chat_complete(
+    client = mk_client(api_key, base_url)
+    raw = chat_complete(
         client,
         model=model,
         messages=[
@@ -416,7 +357,7 @@ def compare_arxiv_abstracts_with_input(
         ],
         temperature=0.2,
         top_p=1.0,
-        max_tokens=1200,
+        max_tokens=4096,
     )
 
     if not raw:
@@ -470,8 +411,8 @@ def organize_selected_papers_report(
     selected_papers: List[Dict[str, Any]],
 ) -> str:
     """Third OpenAI prompt: organize selected papers into a Chinese markdown report."""
-    profile = _active_profile(settings)
-    openai_cfg = _agent_cfg(profile, "openai")
+    profile = active_profile(settings)
+    openai_cfg = agent_cfg(profile, "openai")
     weights = _compare_weights(settings)
     target_count = get_system_param_int(settings, "final_output_paper_count", 5, 1, 50)
 
@@ -512,8 +453,8 @@ def organize_selected_papers_report(
     except Exception as e:
         raise RuntimeError(f"arXiv 整理 Prompt 模板格式化失败：{e}") from e
 
-    client = _mk_client(api_key, base_url)
-    report = _chat_complete(
+    client = mk_client(api_key, base_url)
+    report = chat_complete(
         client,
         model=model,
         messages=[
@@ -537,8 +478,8 @@ def submit_init_prompts(settings: Dict[str, Any]) -> Dict[str, Any]:
         "errors": {"openai": "..."}
       }
     """
-    profile = _active_profile(settings)
-    openai_cfg = _agent_cfg(profile, "openai")
+    profile = active_profile(settings)
+    openai_cfg = agent_cfg(profile, "openai")
 
     result: Dict[str, Any] = {"openai_init_reply": "", "errors": {}}
 
@@ -552,12 +493,12 @@ def submit_init_prompts(settings: Dict[str, Any]) -> Dict[str, Any]:
         if not api_key:
             raise RuntimeError("OpenAI API Key 为空（请在设置里配置）")
 
-        client = _mk_client(api_key, base_url)
+        client = mk_client(api_key, base_url)
         msg = [
             {"role": "system", "content": OPENAI_SYSTEM_PROMPT},
             {"role": "user", "content": OPENAI_INIT_PROMPT},
         ]
-        result["openai_init_reply"] = _chat_complete(
+        result["openai_init_reply"] = chat_complete(
             client,
             model=model,
             messages=msg,
@@ -583,8 +524,8 @@ def run_dual_turn(
     2) 返回 (openai_final, "")
     """
     init_meta = init_meta or {}
-    profile = _active_profile(settings)
-    openai_cfg = _agent_cfg(profile, "openai")
+    profile = active_profile(settings)
+    openai_cfg = agent_cfg(profile, "openai")
 
     api_key = str(openai_cfg.get("api_key") or "").strip()
     base_url = str(openai_cfg.get("base_url") or "").strip()
@@ -592,7 +533,7 @@ def run_dual_turn(
     if not api_key:
         raise RuntimeError("OpenAI API Key 为空")
 
-    client = _mk_client(api_key, base_url)
+    client = mk_client(api_key, base_url)
 
     oa_messages: List[Dict[str, str]] = [{"role": "system", "content": OPENAI_SYSTEM_PROMPT}]
     if init_meta.get("openai_init_reply"):
@@ -631,7 +572,7 @@ def run_dual_turn(
     oa_messages.extend(history)
     oa_messages.append({"role": "user", "content": user_text})
 
-    final = _chat_complete(
+    final = chat_complete(
         client,
         model=model,
         messages=oa_messages,

@@ -46,9 +46,18 @@ logger = logging.getLogger(__name__)
 
 PROVIDERS = ["deepseek", "openai", "google", "doubao"]
 
-DEFAULT_MODELS = {
+PROVIDER_LABELS: Dict[str, str] = {
+    "deepseek": "DeepSeek",
+    "openai": "OpenAI",
+    "google": "Gemini",
+    "doubao": "豆包（Doubao）",
+}
+
+PROVIDER_TUPLES = [(k, PROVIDER_LABELS[k]) for k in PROVIDERS]
+
+DEFAULT_MODELS: Dict[str, list] = {
     "deepseek": ["deepseek-chat", "deepseek-reasoner"],
-    "openai": ["gpt-4.1", "gpt-4o-mini"],
+    "openai": ["gpt-5.1", "gpt-4.1", "gpt-4o-mini"],
     "google": ["gemini-2.5-flash", "gemini-2.0-flash"],
     "doubao": [],
 }
@@ -57,7 +66,7 @@ DEFAULT_AGENT_CFG = {
     "deepseek": {
         "model": "deepseek-chat",
         "api_key_keyring": "",  # 指向 keyring 中的位置
-        "base_url": "https://api.deepseek.com/v1",
+        "base_url": "https://api.deepseek.com",
         "temperature": 0.2,
         "top_p": 1.0,
         "max_tokens": 2048,
@@ -105,6 +114,7 @@ DEFAULT_SYSTEM_CFG = {
     "weight_recency": 0.20,
     "weight_citation": 0.05,
     "sentence_transformer_model": "BAAI/bge-large-en-v1.5",
+    "zh2en_translation_cache_size": 3,
 }
 
 # ===========================

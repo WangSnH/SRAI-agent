@@ -7,26 +7,42 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QFormLayout,
     QLineEdit, QComboBox, QPushButton, QMessageBox,
-    QFrame, QTabWidget, QWidget
+    QFrame, QTabWidget, QWidget, QDoubleSpinBox, QSpinBox
 )
 
-from paperscout.config.settings import set_profile_agent_api_key, get_safe_str, PROVIDERS
+from paperscout.config.settings import set_profile_agent_api_key, get_safe_str, PROVIDERS, PROVIDER_TUPLES, DEFAULT_MODELS
 
 
 class ProfileEditorDialog(QDialog):
-    PROVIDERS: List[Tuple[str, str]] = [
-        ("deepseek", "DeepSeek"),
-        ("openai", "OpenAI"),
-        ("google", "Gemini"),
-        ("doubao", "豆包（Doubao）"),
-    ]
+    PROVIDERS: List[Tuple[str, str]] = PROVIDER_TUPLES
 
-    DEFAULT_MODELS: Dict[str, List[str]] = {
-        "deepseek": ["deepseek-chat", "deepseek-reasoner"],
-        "openai": ["gpt-4o-mini", "gpt-4.1"],
-        "google": ["gemini-2.5-flash", "gemini-2.0-flash"],
-        "doubao": [],
-    }
+    DEFAULT_MODELS: Dict[str, List[str]] = DEFAULT_MODELS
+
+    @classmethod
+    def _populate_model_combo(cls, combo: QComboBox, provider: str):
+        combo.clear()
+        for model_id in cls.DEFAULT_MODELS.get(provider, []):
+            combo.addItem(model_id, userData=model_id)
+
+    @staticmethod
+    def _set_combo_model(combo: QComboBox, model_id: str):
+        mid = str(model_id or "").strip()
+        if not mid:
+            combo.setCurrentText("")
+            return
+        idx = combo.findData(mid)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        else:
+            combo.addItem(mid, userData=mid)
+            combo.setCurrentText(mid)
+
+    @staticmethod
+    def _get_combo_model(combo: QComboBox) -> str:
+        model_id = combo.currentData()
+        if model_id is not None:
+            return str(model_id).strip()
+        return str(combo.currentText() or "").strip()
 
     def __init__(self, parent=None, initial: Optional[Dict[str, Any]] = None, title: str = "编辑配置集"):
         super().__init__(parent)
@@ -114,15 +130,9 @@ class ProfileEditorDialog(QDialog):
 
         cmb_model = QComboBox()
         cmb_model.setEditable(True)
-        for m in self.DEFAULT_MODELS.get(provider, []):
-            cmb_model.addItem(m)
+        self._populate_model_combo(cmb_model, provider)
         model = get_safe_str(cfg, "model", "")
-        if model:
-            if cmb_model.findText(model) >= 0:
-                cmb_model.setCurrentText(model)
-            else:
-                cmb_model.addItem(model)
-                cmb_model.setCurrentText(model)
+        self._set_combo_model(cmb_model, model)
 
         ed_key = QLineEdit()
         ed_key.setEchoMode(QLineEdit.Password)
@@ -137,9 +147,38 @@ class ProfileEditorDialog(QDialog):
         ed_base.setPlaceholderText("可选：留空则使用默认/SDK默认")
         ed_base.setText(get_safe_str(cfg, "base_url", ""))
 
+        spn_temp = QDoubleSpinBox()
+        spn_temp.setRange(0.0, 2.0)
+        spn_temp.setSingleStep(0.1)
+        spn_temp.setDecimals(2)
+        try:
+            spn_temp.setValue(float(cfg.get("temperature", 0.2) or 0.2))
+        except (TypeError, ValueError):
+            spn_temp.setValue(0.2)
+
+        spn_top_p = QDoubleSpinBox()
+        spn_top_p.setRange(0.0, 1.0)
+        spn_top_p.setSingleStep(0.1)
+        spn_top_p.setDecimals(2)
+        try:
+            spn_top_p.setValue(float(cfg.get("top_p", 1.0) or 1.0))
+        except (TypeError, ValueError):
+            spn_top_p.setValue(1.0)
+
+        spn_max_tokens = QSpinBox()
+        spn_max_tokens.setRange(1, 65536)
+        spn_max_tokens.setSingleStep(256)
+        try:
+            spn_max_tokens.setValue(int(cfg.get("max_tokens", 2048) or 2048))
+        except (TypeError, ValueError):
+            spn_max_tokens.setValue(2048)
+
         form.addRow("Model", cmb_model)
         form.addRow("API Key", ed_key)
         form.addRow("Base URL（可选）", ed_base)
+        form.addRow("Temperature", spn_temp)
+        form.addRow("Top P", spn_top_p)
+        form.addRow("Max Tokens", spn_max_tokens)
 
         layout.addLayout(form)
 
@@ -147,6 +186,9 @@ class ProfileEditorDialog(QDialog):
             "model": cmb_model,
             "api_key": ed_key,
             "base_url": ed_base,
+            "temperature": spn_temp,
+            "top_p": spn_top_p,
+            "max_tokens": spn_max_tokens,
         }
         return w
 
@@ -174,13 +216,17 @@ class ProfileEditorDialog(QDialog):
         agents: Dict[str, Any] = {}
         for prov, _ in self.PROVIDERS:
             ui = self._agent_ui[prov]
+            raw_base = get_safe_str({"b": ui["base_url"].text()}, "b", "").strip()
             agent_cfg = {
-                "model": get_safe_str({"m": ui["model"].currentText()}, "m", "").strip(),
-                "base_url": get_safe_str({"b": ui["base_url"].text()}, "b", "").strip(),
+                "model": self._get_combo_model(ui["model"]),
+                "base_url": raw_base,
                 "api_key_keyring": "",  # 暂时为空，稍后通过 set_profile_agent_api_key 设置
+                "temperature": ui["temperature"].value(),
+                "top_p": ui["top_p"].value(),
+                "max_tokens": ui["max_tokens"].value(),
             }
             if prov == "deepseek" and not agent_cfg["base_url"]:
-                agent_cfg["base_url"] = "https://api.deepseek.com/v1"
+                agent_cfg["base_url"] = "https://api.deepseek.com"
             
             agents[prov] = agent_cfg
 

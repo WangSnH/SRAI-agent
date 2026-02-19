@@ -106,9 +106,79 @@ class ChatController:
 
             return text
 
+        def md_to_html(s: str) -> str:
+            """Lightweight Markdown-to-HTML for assistant messages.
+
+            Supports: headings (#-###), bold (**), italic (*), unordered lists (-/*)
+            and links/URLs via linkify_text.  Falls back to pre-wrap for
+            non-Markdown text.
+            """
+            # Check if content looks like Markdown (has headings or list items)
+            has_md = bool(re.search(r"^#{1,3}\s|^\s*[-*]\s", s, re.MULTILINE))
+            if not has_md:
+                return f'<div style="white-space:pre-wrap;">{linkify_text(s)}</div>'
+
+            lines = s.split("\n")
+            html_parts: List[str] = []
+            in_list = False
+
+            for line in lines:
+                stripped = line.strip()
+
+                # Headings
+                heading_match = re.match(r"^(#{1,3})\s+(.+)$", stripped)
+                if heading_match:
+                    if in_list:
+                        html_parts.append("</ul>")
+                        in_list = False
+                    level = len(heading_match.group(1))
+                    sizes = {1: "16px", 2: "14px", 3: "13px"}
+                    content = linkify_text(heading_match.group(2))
+                    # Apply bold/italic inline
+                    content = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", content)
+                    content = re.sub(r"\*(.+?)\*", r"<i>\1</i>", content)
+                    html_parts.append(
+                        f'<div style="font-weight:700; font-size:{sizes.get(level, "13px")}; '
+                        f'margin:8px 0 4px 0;">{content}</div>'
+                    )
+                    continue
+
+                # List items
+                list_match = re.match(r"^\s*[-*]\s+(.+)$", stripped)
+                if list_match:
+                    if not in_list:
+                        html_parts.append('<ul style="margin:2px 0; padding-left:18px;">')
+                        in_list = True
+                    content = linkify_text(list_match.group(1))
+                    content = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", content)
+                    content = re.sub(r"\*(.+?)\*", r"<i>\1</i>", content)
+                    html_parts.append(f"<li>{content}</li>")
+                    continue
+
+                # Close list if we hit a non-list line
+                if in_list:
+                    html_parts.append("</ul>")
+                    in_list = False
+
+                # Empty line
+                if not stripped:
+                    html_parts.append('<div style="height:6px;"></div>')
+                    continue
+
+                # Regular paragraph
+                content = linkify_text(stripped)
+                content = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", content)
+                content = re.sub(r"\*(.+?)\*", r"<i>\1</i>", content)
+                html_parts.append(f'<div style="margin:2px 0;">{content}</div>')
+
+            if in_list:
+                html_parts.append("</ul>")
+
+            return "\n".join(html_parts)
+
         msgs = self.messages(session_id)
 
-        parts = ['<div style="padding:12px 14px; font-family: sans-serif;">']
+        parts = ['<div style="padding:12px 14px; font-family: \'PingFang SC\',\'Microsoft YaHei\',\'Segoe UI\',\'Helvetica Neue\',Arial,sans-serif;">']
         parts.append(
             f'<div style="color:#666; margin-bottom:8px;">'
             f'对话：<b>{esc(context_name)}</b> · 配置：<b>{esc(model_name)}</b>'
@@ -134,7 +204,7 @@ class ChatController:
                   <div style="margin:10px 0; display:flex; justify-content:flex-start;">
                     <div style="max-width:70%; background:#f2f4f7; color:#111; padding:10px 12px; border-radius:14px;">
                       <div style="font-size:12px; color:#666; margin-bottom:4px;">助手 · {t}</div>
-                                            <div style="white-space:pre-wrap;">{linkify_text(m.text)}</div>
+                      {md_to_html(m.text)}
                     </div>
                   </div>
                 """
@@ -143,7 +213,7 @@ class ChatController:
                 parts.append(
                     f"""
                   <div style="margin:10px 0; text-align:center; color:#888; font-size:12px;">
-                                        {t} · {linkify_text(m.text)}
+                    {t} · {linkify_text(m.text)}
                   </div>
                 """
                 )

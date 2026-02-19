@@ -2,6 +2,8 @@ __pycache__/
 */__pycache__/
 **/__pycache__/
 *.pyc
+*.pyo
+*.pyd
 .venv/
 venv/
 .idea/
@@ -10,3 +12,21 @@ dist/
 build/
 *.egg-info/
 .DS_Store
+
+# Environment / secrets
+.env
+.env.*
+
+# Python tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local runtime artifacts
+*.log
+*.sqlite
+*.sqlite3
+*.db

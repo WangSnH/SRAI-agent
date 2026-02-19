@@ -7,41 +7,51 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame, QListWidget,
     QListWidgetItem, QPushButton, QMessageBox, QFormLayout, QLineEdit,
-    QComboBox, QTabWidget
+    QComboBox, QTabWidget, QDoubleSpinBox, QSpinBox
 )
 
 from paperscout.ui.dialogs.profile_editor_dialog import ProfileEditorDialog
 from paperscout.config.settings import (
-    get_safe_str, set_profile_agent_api_key, get_profile_agent_info, PROVIDERS
+    get_safe_str, set_profile_agent_api_key, get_profile_agent_info,
+    PROVIDERS, PROVIDER_TUPLES, DEFAULT_MODELS
 )
+from paperscout.services.llm_client import normalize_base_url
 
 
 class LLMPage(QWidget):
-    PROVIDERS = [
-        ("deepseek", "DeepSeek"),
-        ("openai", "OpenAI"),
-        ("google", "Gemini"),
-        ("doubao", "豆包（Doubao）"),
-    ]
+    PROVIDERS = PROVIDER_TUPLES
 
-    DEFAULT_MODELS = {
-        "deepseek": ["deepseek-chat", "deepseek-reasoner"],
-        "openai": ["gpt-4o-mini", "gpt-4.1"],
-        "google": ["gemini-2.5-flash", "gemini-2.0-flash"],
-        "doubao": [],
-    }
+    DEFAULT_MODELS = DEFAULT_MODELS
+
+    @classmethod
+    def _populate_model_combo(cls, combo: QComboBox, provider: str):
+        combo.clear()
+        for model_id in cls.DEFAULT_MODELS.get(provider, []):
+            combo.addItem(model_id, userData=model_id)
+
+    @staticmethod
+    def _set_combo_model(combo: QComboBox, model_id: str):
+        mid = str(model_id or "").strip()
+        if not mid:
+            combo.setCurrentText("")
+            return
+        idx = combo.findData(mid)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        else:
+            combo.addItem(mid, userData=mid)
+            combo.setCurrentText(mid)
+
+    @staticmethod
+    def _get_combo_model(combo: QComboBox) -> str:
+        model_id = combo.currentData()
+        if model_id is not None:
+            return str(model_id).strip()
+        return str(combo.currentText() or "").strip()
 
     @staticmethod
     def _normalize_base_url(provider: str, base_url: str) -> str:
-        url = str(base_url or "").strip()
-        if not url:
-            return ""
-        if provider in ("openai", "deepseek", "google", "doubao"):
-            p = urlparse(url)
-            path = (p.path or "").strip()
-            if path in ("", "/"):
-                return url.rstrip("/") + "/v1"
-        return url
+        return normalize_base_url(base_url)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -153,8 +163,7 @@ class LLMPage(QWidget):
 
         cmb_model = QComboBox()
         cmb_model.setEditable(True)
-        for m in self.DEFAULT_MODELS.get(provider, []):
-            cmb_model.addItem(m)
+        self._populate_model_combo(cmb_model, provider)
 
         ed_key = QLineEdit()
         ed_key.setEchoMode(QLineEdit.Password)
@@ -162,9 +171,29 @@ class LLMPage(QWidget):
         ed_base = QLineEdit()
         ed_base.setPlaceholderText("可选：留空则使用默认/SDK默认")
 
+        spn_temp = QDoubleSpinBox()
+        spn_temp.setRange(0.0, 2.0)
+        spn_temp.setSingleStep(0.1)
+        spn_temp.setDecimals(2)
+        spn_temp.setValue(0.2)
+
+        spn_top_p = QDoubleSpinBox()
+        spn_top_p.setRange(0.0, 1.0)
+        spn_top_p.setSingleStep(0.1)
+        spn_top_p.setDecimals(2)
+        spn_top_p.setValue(1.0)
+
+        spn_max_tokens = QSpinBox()
+        spn_max_tokens.setRange(1, 65536)
+        spn_max_tokens.setSingleStep(256)
+        spn_max_tokens.setValue(2048)
+
         form.addRow("Model", cmb_model)
         form.addRow("API Key", ed_key)
         form.addRow("Base URL（可选）", ed_base)
+        form.addRow("Temperature", spn_temp)
+        form.addRow("Top P", spn_top_p)
+        form.addRow("Max Tokens", spn_max_tokens)
 
         layout.addLayout(form)
 
@@ -172,6 +201,9 @@ class LLMPage(QWidget):
             "model": cmb_model,
             "api_key": ed_key,
             "base_url": ed_base,
+            "temperature": spn_temp,
+            "top_p": spn_top_p,
+            "max_tokens": spn_max_tokens,
         }
         return w
 
@@ -405,18 +437,24 @@ class LLMPage(QWidget):
 
                 model = get_safe_str(cfg, "model", "")
                 ui["model"].blockSignals(True)
-                # keep existing items + ensure selected
-                if model:
-                    if ui["model"].findText(model) >= 0:
-                        ui["model"].setCurrentText(model)
-                    else:
-                        ui["model"].addItem(model)
-                        ui["model"].setCurrentText(model)
-                else:
-                    ui["model"].setCurrentText("")
+                self._set_combo_model(ui["model"], model)
                 ui["model"].blockSignals(False)
 
                 ui["base_url"].setText(get_safe_str(cfg, "base_url", ""))
+
+                # 加载参数值
+                try:
+                    ui["temperature"].setValue(float(cfg.get("temperature", 0.2) or 0.2))
+                except (TypeError, ValueError):
+                    ui["temperature"].setValue(0.2)
+                try:
+                    ui["top_p"].setValue(float(cfg.get("top_p", 1.0) or 1.0))
+                except (TypeError, ValueError):
+                    ui["top_p"].setValue(1.0)
+                try:
+                    ui["max_tokens"].setValue(int(cfg.get("max_tokens", 2048) or 2048))
+                except (TypeError, ValueError):
+                    ui["max_tokens"].setValue(2048)
 
                 # 加载 API Key：有 key 就显示占位符 ***，防止每次保存重复存储
                 resolved_key = get_profile_agent_info({"agents": {prov: cfg}}, prov).get("api_key", "")
@@ -443,20 +481,22 @@ class LLMPage(QWidget):
         p.setdefault("agents", {})
         agents = p["agents"] if isinstance(p["agents"], dict) else {}
         
-        # 第一遍：更新 model / base_url，保留旧的 api_key_keyring
+        # 第一遍：更新 model / base_url / 参数，保留旧的 api_key_keyring
+        # 注意：base_url 不在此处做 normalize，由 mk_client 创建客户端时统一处理
         for prov, _ in self.PROVIDERS:
             ui = self._agent_ui[prov]
             old_cfg = agents.get(prov, {}) if isinstance(agents.get(prov), dict) else {}
+            raw_base = get_safe_str({"b": ui["base_url"].text()}, "b", "").strip()
             agents[prov] = {
-                "model": get_safe_str({"m": ui["model"].currentText()}, "m", "").strip(),
-                "base_url": self._normalize_base_url(
-                    prov,
-                    get_safe_str({"b": ui["base_url"].text()}, "b", "").strip(),
-                ),
+                "model": self._get_combo_model(ui["model"]),
+                "base_url": raw_base,
                 "api_key_keyring": old_cfg.get("api_key_keyring", ""),  # 保留旧的 keyring 引用
+                "temperature": ui["temperature"].value(),
+                "top_p": ui["top_p"].value(),
+                "max_tokens": ui["max_tokens"].value(),
             }
             if prov == "deepseek" and not agents[prov]["base_url"]:
-                agents[prov]["base_url"] = "https://api.deepseek.com/v1"
+                agents[prov]["base_url"] = "https://api.deepseek.com"
 
         # 确保 p["agents"] 引用正确的 agents dict
         p["agents"] = agents

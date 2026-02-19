@@ -20,6 +20,7 @@ class SystemPage(QWidget):
         self._weight_recency = 0.20
         self._weight_citation = 0.05
         self._sentence_transformer_model = "BAAI/bge-large-en-v1.5"
+        self._zh2en_translation_cache_size = 3
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 16)
@@ -72,6 +73,9 @@ class SystemPage(QWidget):
         self.cb_sentence_transformer_model = QComboBox()
         self.cb_sentence_transformer_model.addItems(SENTENCE_TRANSFORMER_MODEL_OPTIONS)
 
+        self.ed_zh2en_cache_size = QLineEdit()
+        self.ed_zh2en_cache_size.setPlaceholderText("默认 3（范围 1~20）")
+
         form.addRow("最终输出论文数量", self.ed_final_output)
         form.addRow("第一个Prompt默认max_results", self.ed_arxiv_api_default)
         form.addRow("arXiv API 输出论文数量", self.ed_arxiv_fetch)
@@ -81,6 +85,8 @@ class SystemPage(QWidget):
         form.addRow("权重 recency", self.ed_weight_recency)
         form.addRow("权重 citation", self.ed_weight_citation)
         form.addRow("语义筛选模型", self.cb_sentence_transformer_model)
+        form.addRow("—— 中译英并行配置 ——", QLabel(""))
+        form.addRow("中译英缓存译文条数", self.ed_zh2en_cache_size)
         form_wrap.addLayout(form)
         root.addStretch(1)
 
@@ -135,6 +141,12 @@ class SystemPage(QWidget):
             selected_model = "BAAI/bge-large-en-v1.5"
         self._sentence_transformer_model = selected_model
 
+        try:
+            self._zh2en_translation_cache_size = int(system_cfg.get("zh2en_translation_cache_size", 3))
+        except Exception:
+            self._zh2en_translation_cache_size = 3
+        self._zh2en_translation_cache_size = max(1, min(20, self._zh2en_translation_cache_size))
+
         self.ed_final_output.setText(str(self._final_output_paper_count))
         self.ed_arxiv_api_default.setText(str(self._arxiv_api_default_max_results))
         self.ed_arxiv_fetch.setText(str(self._arxiv_fetch_max_results))
@@ -144,6 +156,7 @@ class SystemPage(QWidget):
         self.ed_weight_recency.setText(f"{self._weight_recency:.2f}")
         self.ed_weight_citation.setText(f"{self._weight_citation:.2f}")
         self.cb_sentence_transformer_model.setCurrentText(self._sentence_transformer_model)
+        self.ed_zh2en_cache_size.setText(str(self._zh2en_translation_cache_size))
 
     def dump(self, settings: Dict[str, Any]) -> Dict[str, Any]:
         system_cfg = settings.setdefault("system", {}) if isinstance(settings, dict) else {}
@@ -157,6 +170,7 @@ class SystemPage(QWidget):
             system_cfg["weight_recency"] = round(self._weight_recency, 4)
             system_cfg["weight_citation"] = round(self._weight_citation, 4)
             system_cfg["sentence_transformer_model"] = self._sentence_transformer_model
+            system_cfg["zh2en_translation_cache_size"] = self._zh2en_translation_cache_size
         return settings
 
     def validate_or_warn(self, parent=None) -> bool:
@@ -168,6 +182,7 @@ class SystemPage(QWidget):
         wn_text = str(self.ed_weight_novelty.text() or "").strip()
         wre_text = str(self.ed_weight_recency.text() or "").strip()
         wc_text = str(self.ed_weight_citation.text() or "").strip()
+        zh2en_cache_size_text = str(self.ed_zh2en_cache_size.text() or "").strip()
 
         try:
             final_count = int(final_text or "5")
@@ -193,6 +208,12 @@ class SystemPage(QWidget):
             QMessageBox.warning(parent, "提示", "第二个Prompt截断数量必须是整数。")
             return False
 
+        try:
+            zh2en_cache_size = int(zh2en_cache_size_text or "3")
+        except Exception:
+            QMessageBox.warning(parent, "提示", "中译英缓存译文条数必须是整数。")
+            return False
+
         if final_count < 1 or final_count > 50:
             QMessageBox.warning(parent, "提示", "最终输出论文数量范围应为 1~50。")
             return False
@@ -211,6 +232,10 @@ class SystemPage(QWidget):
 
         if fetch_count < final_count:
             QMessageBox.warning(parent, "提示", "arXiv API 输出论文数量不能小于最终输出论文数量。")
+            return False
+
+        if zh2en_cache_size < 1 or zh2en_cache_size > 20:
+            QMessageBox.warning(parent, "提示", "中译英缓存译文条数范围应为 1~20。")
             return False
 
         try:
@@ -240,6 +265,7 @@ class SystemPage(QWidget):
         self._weight_novelty = wn
         self._weight_recency = wre
         self._weight_citation = wc
+        self._zh2en_translation_cache_size = zh2en_cache_size
         selected_model = str(self.cb_sentence_transformer_model.currentText() or "").strip()
         if selected_model not in SENTENCE_TRANSFORMER_MODEL_OPTIONS:
             QMessageBox.warning(parent, "提示", "语义筛选模型无效，请重新选择。")

@@ -9,6 +9,8 @@ class ChatView(QTextBrowser):
         super().__init__(parent)
         self.setObjectName("ChatView")
         self.setOpenExternalLinks(True)
+        # Ensure viewport paints its own background (prevents black/white blocks)
+        self.viewport().setAutoFillBackground(True)
 
     def set_html_and_scroll_bottom(self, html: str):
         self.setHtml(html)

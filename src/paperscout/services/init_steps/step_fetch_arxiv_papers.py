@@ -24,6 +24,7 @@ class StepFetchArxivPapers(InitStep):
     name = "调用 arXiv API 并筛选高质量论文"
 
     _st_model_cache: Dict[str, Any] = {}
+    _ST_MODEL_CACHE_MAX_SIZE = 2  # Limit to avoid memory explosion
 
     def __init__(self):
         self._last_rank_backend = "bm25"
@@ -315,6 +316,7 @@ class StepFetchArxivPapers(InitStep):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             payload = {
                 "version": 1,
+                "saved_at": time.time(),
                 "papers": [p for p in papers[:80] if isinstance(p, dict)],
             }
             with open(path, "w", encoding="utf-8") as f:
@@ -322,13 +324,19 @@ class StepFetchArxivPapers(InitStep):
         except Exception:
             pass
 
-    def _load_cache(self) -> List[Dict[str, Any]]:
+    def _load_cache(self, max_age_hours: float = 24.0) -> List[Dict[str, Any]]:
         try:
             path = self._cache_path()
             if not os.path.exists(path):
                 return []
             with open(path, "r", encoding="utf-8") as f:
                 payload = json.load(f)
+            if not isinstance(payload, dict):
+                return []
+            # Check expiration
+            saved_at = float(payload.get("saved_at", 0) or 0)
+            if saved_at > 0 and (time.time() - saved_at) > max_age_hours * 3600:
+                return []  # Cache expired
             papers = payload.get("papers") if isinstance(payload, dict) else []
             return [p for p in (papers or []) if isinstance(p, dict)]
         except Exception:
@@ -370,6 +378,10 @@ class StepFetchArxivPapers(InitStep):
                 selected_model = "BAAI/bge-large-en-v1.5"
             model = self._st_model_cache.get(selected_model)
             if model is None:
+                # Evict oldest entry if cache is full
+                if len(self._st_model_cache) >= self._ST_MODEL_CACHE_MAX_SIZE:
+                    oldest_key = next(iter(self._st_model_cache))
+                    del self._st_model_cache[oldest_key]
                 model = SentenceTransformer(selected_model)
                 self._st_model_cache[selected_model] = model
             embeddings = model.encode([clean_query] + docs, normalize_embeddings=True)

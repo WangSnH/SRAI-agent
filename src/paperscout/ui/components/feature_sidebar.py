@@ -31,6 +31,7 @@ class FeatureSidebar(QWidget):
     thread_selected = Signal(str, str, str)  # feature_key, thread_id, thread_name
     thread_created = Signal(str, str, str)   # feature_key, thread_id, thread_name
     thread_deleted = Signal(str, str)        # feature_key, thread_id
+    feature_expanded_changed = Signal(str, bool)  # feature_key, expanded
 
     ROLE_KIND = Qt.UserRole
     ROLE_FEATURE = Qt.UserRole + 1
@@ -65,6 +66,8 @@ class FeatureSidebar(QWidget):
 
         self.search.textChanged.connect(self._filter)
         self.tree.currentItemChanged.connect(self._on_current_changed)
+        self.tree.itemExpanded.connect(self._on_item_expanded)
+        self.tree.itemCollapsed.connect(self._on_item_collapsed)
 
     def load(self, threads_by_feature: dict[str, List[dict]], expanded: Optional[dict[str, bool]] = None,
              active: Optional[dict[str, str]] = None):
@@ -84,10 +87,13 @@ class FeatureSidebar(QWidget):
         selected_item: Optional[QTreeWidgetItem] = None
 
         for f in self.features:
-            top = QTreeWidgetItem([f.name])
+            # Keep top-level text empty because we render a custom widget for it.
+            # This avoids duplicate text painting (blur/ghosting).
+            top = QTreeWidgetItem([""])
             top.setData(0, self.ROLE_KIND, "feature")
             top.setData(0, self.ROLE_FEATURE, f.key)
             top.setFirstColumnSpanned(True)
+            top.setFlags(top.flags() & ~Qt.ItemIsSelectable)
             self.tree.addTopLevelItem(top)
 
             top_widget = QWidget()
@@ -96,6 +102,7 @@ class FeatureSidebar(QWidget):
             tw_l.setSpacing(6)
 
             lbl = QLabel(f.name)
+            lbl.setStyleSheet("background: transparent; color: #111111; font-weight: 600;")
             btn_add = QPushButton("＋")
             btn_add.setObjectName("MiniBtn")
             btn_add.setCursor(Qt.PointingHandCursor)
@@ -236,4 +243,20 @@ class FeatureSidebar(QWidget):
                     top.setExpanded(True)
             else:
                 top.setHidden(False)
+
+    def _on_item_expanded(self, item: QTreeWidgetItem):
+        kind = item.data(0, self.ROLE_KIND)
+        if kind != "feature":
+            return
+        fkey = str(item.data(0, self.ROLE_FEATURE) or "").strip()
+        if fkey:
+            self.feature_expanded_changed.emit(fkey, True)
+
+    def _on_item_collapsed(self, item: QTreeWidgetItem):
+        kind = item.data(0, self.ROLE_KIND)
+        if kind != "feature":
+            return
+        fkey = str(item.data(0, self.ROLE_FEATURE) or "").strip()
+        if fkey:
+            self.feature_expanded_changed.emit(fkey, False)
 

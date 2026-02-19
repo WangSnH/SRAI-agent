@@ -7,7 +7,13 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QFrame, QMessageBox, QInputDialog
 
 from paperscout.config.settings import load_settings, save_settings
-from paperscout.config.ui_state import ensure_ui_state, list_threads, set_active_thread, add_thread
+from paperscout.config.ui_state import (
+    ensure_ui_state,
+    list_threads,
+    set_active_thread,
+    add_thread,
+    remove_legacy_default_threads,
+)
 from paperscout.ui.controllers.chat_controller import ChatController
 from paperscout.ui.components.feature_sidebar import FeatureSidebar, FeatureItem
 from paperscout.ui.components.chat_header import ChatHeader
@@ -20,15 +26,23 @@ from paperscout.services.runtime_context import runtime_store
 
 
 class MainWindow(QMainWindow):
+    NO_THREAD_SESSION_ID = "__no_thread__"
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PaperScout")
         self.resize(1200, 720)
 
         self.settings = ensure_ui_state(load_settings())
+        if remove_legacy_default_threads(self.settings):
+            try:
+                save_settings(self.settings)
+            except Exception:
+                pass
         self.chat = ChatController()
         self._init_timeout_ms = 300000  # 默认 5 分钟（可在设置页调整）
         self._reload_init_timeout()
+        self._send_locked = False
 
         # keep refs to background threads / workers / relays (prevent GC)
         self._bg_threads: list = []
@@ -51,6 +65,7 @@ class MainWindow(QMainWindow):
         # 仅保留一个顶层功能：爬取arxiv（后续可追加更多 FeatureItem）
         features = [
             FeatureItem(key="arxiv", name="爬取arxiv", meta="arXiv / 抓取 / 评估（后续接入）"),
+            FeatureItem(key="zh2en", name="中译英", meta="中译英 / 会话初始化（后续接入）"),
         ]
         self.sidebar = FeatureSidebar(features)
         left_layout.addWidget(self.sidebar, 1)
@@ -77,6 +92,7 @@ class MainWindow(QMainWindow):
         self.sidebar.thread_selected.connect(self.on_thread_selected)
         self.sidebar.thread_created.connect(self.on_thread_created)
         self.sidebar.thread_deleted.connect(self.on_thread_deleted)
+        self.sidebar.feature_expanded_changed.connect(self.on_feature_expanded_changed)
 
         self.header.settings_clicked.connect(self.open_settings)
         self.composer.model_clicked.connect(self.open_profile_menu)
@@ -139,6 +155,20 @@ class MainWindow(QMainWindow):
         _fkey, _tid, tname = self.sidebar.current_selection()
         return tname or "（未选择对话）"
 
+    def _sync_composer_state(self):
+        _fkey, tid, _tname = self.sidebar.current_selection()
+        has_thread = bool((tid or "").strip())
+
+        try:
+            self.composer.input.setEnabled(has_thread)
+            self.composer.btn_send.setEnabled(has_thread and (not self._send_locked))
+            if has_thread:
+                self.composer.input.setPlaceholderText("输入指令…")
+            else:
+                self.composer.input.setPlaceholderText("请先在左侧点击＋新建对话")
+        except Exception:
+            pass
+
     def _load_sidebar_state(self):
         # Build sidebar from persisted UI state
         ui = (self.settings.get("ui", {}) or {}) if isinstance(self.settings, dict) else {}
@@ -162,6 +192,9 @@ class MainWindow(QMainWindow):
         _fkey, tid, _tname = self.sidebar.current_selection()
         if tid:
             self.chat.set_session(tid)
+        else:
+            self.chat.set_session(self.NO_THREAD_SESSION_ID)
+        self._sync_composer_state()
 
     def _refresh(self):
         """Coalesce rapid refresh calls into one per event-loop cycle."""
@@ -172,6 +205,7 @@ class MainWindow(QMainWindow):
 
     def _do_refresh(self):
         self._refresh_pending = False
+        self._sync_composer_state()
         p = self._active_profile()
         profile_name = (p.get("name") or "未命名配置集").strip()
         default_agent, model = self._active_default_agent_info()
@@ -196,8 +230,21 @@ class MainWindow(QMainWindow):
             pass
 
         self.chat.set_session(thread_id)
+        self.chat.set_meta("feature_key", feature_key, session_id=thread_id)
         self.chat.add("system", f"已切换对话：{thread_name}")
+        self._sync_composer_state()
         self._refresh()
+
+    def on_feature_expanded_changed(self, feature_key: str, expanded: bool):
+        ui = self.settings.setdefault("ui", {})
+        features = ui.setdefault("features", {}) if isinstance(ui, dict) else {}
+        feature = features.setdefault(feature_key, {}) if isinstance(features, dict) else {}
+        if isinstance(feature, dict):
+            feature["expanded"] = bool(expanded)
+        try:
+            save_settings(self.settings)
+        except Exception:
+            pass
 
     def on_thread_created(self, feature_key: str, thread_id: str, thread_name: str):
         add_thread(self.settings, feature_key, thread_id, thread_name)
@@ -207,6 +254,31 @@ class MainWindow(QMainWindow):
             pass
 
         self._load_sidebar_state()
+
+        # zh2en: create-and-chat directly (no popup, no init pipeline)
+        if feature_key == "zh2en":
+            original_input = (thread_name or "").strip() or "新对话"
+            runtime_store.set_original_input(thread_id, original_input)
+
+            self.chat.set_session(thread_id)
+            self.chat.set_meta("feature_key", feature_key, session_id=thread_id)
+            self.chat.set_meta("original_input", original_input, session_id=thread_id)
+            self.chat.set_meta("init_state", "done", session_id=thread_id)
+            # Keep default strategy context and cache fields without running init pipeline.
+            self.chat.set_meta(
+                "init_meta",
+                {
+                    "original_input": original_input,
+                    "zh2en_init_reply": "",
+                    "zh2en_translation_list": [],
+                    "zh2en_latest_translation": "",
+                    "init_errors": {},
+                },
+                session_id=thread_id,
+            )
+            self._sync_composer_state()
+            self._refresh()
+            return
 
         original_input, ok = QInputDialog.getMultiLineText(
             self,
@@ -221,8 +293,10 @@ class MainWindow(QMainWindow):
         runtime_store.set_original_input(thread_id, original_input)
 
         self.chat.set_session(thread_id)
+        self.chat.set_meta("feature_key", feature_key, session_id=thread_id)
         self.chat.set_meta("original_input", original_input, session_id=thread_id)
         self.chat.set_meta("init_state", "running", session_id=thread_id)
+        self._sync_composer_state()
         self._refresh()
 
         from paperscout.ui.workers.init_pipeline_worker import start_init_pipeline
@@ -323,15 +397,30 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(self._init_timeout_ms, _on_init_timeout)
 
     def _cleanup_finished_threads(self):
-        """Remove references to threads that have finished."""
-        self._bg_threads = [
-            item for item in self._bg_threads
-            if isinstance(item, tuple) and item[0].isRunning()
-        ]
+        """Remove references to threads that have finished and schedule deletion."""
+        alive = []
+        for item in self._bg_threads:
+            if not isinstance(item, tuple):
+                continue
+            th = item[0]
+            if th.isRunning():
+                alive.append(item)
+            else:
+                # Schedule QObject deletion for thread, worker, and relay
+                for obj in item:
+                    try:
+                        obj.deleteLater()
+                    except Exception:
+                        pass
+        self._bg_threads = alive
 
 
     def on_thread_deleted(self, feature_key: str, thread_id: str):
         ensure_ui_state(self.settings)
+
+        # Clean up runtime cache for this thread
+        runtime_store.remove_thread(thread_id)
+
         ui = self.settings.setdefault("ui", {})
         features = ui.setdefault("features", {})
         f = features.setdefault(feature_key, {})
@@ -344,12 +433,11 @@ class MainWindow(QMainWindow):
             if not (isinstance(t, dict) and str(t.get("id") or "").strip() == thread_id)
         ]
 
-        if not threads:
-            # keep at least one
-            threads = [{"id": "t_default", "name": "默认对话"}]
-
         f["threads"] = threads
-        f["active_thread_id"] = str(threads[0].get("id") or "").strip()
+        if threads:
+            f["active_thread_id"] = str(threads[0].get("id") or "").strip()
+        else:
+            f["active_thread_id"] = ""
 
         try:
             save_settings(self.settings)
@@ -361,38 +449,49 @@ class MainWindow(QMainWindow):
         if tid:
             self.chat.set_session(tid)
             self.chat.add("system", f"已删除对话并切换：{tname}")
+        else:
+            self.chat.set_session(self.NO_THREAD_SESSION_ID)
+        self._sync_composer_state()
         self._refresh()
 
-    def on_send(self, text: str):
-        text = (text or "").strip()
-        if not text:
+    def on_send(self, raw_text: str):
+        raw_text = (raw_text or "").strip()
+        if not raw_text:
+            return
+
+        current_feature, tid, _name = self.sidebar.current_selection()
+        if not tid:
+            QMessageBox.information(self, "提示", "请先在左侧点击＋新建对话。")
+            self._sync_composer_state()
             return
 
         # 当前会话
-        sid = getattr(self.chat, "current_session_id", lambda: "")() or "default"
+        sid = str(tid).strip()
         self.chat.set_session(sid)
+        feature_key = str(self.chat.get_meta("feature_key", "", session_id=sid) or "").strip()
+        if not feature_key:
+            feature_key = (current_feature or "arxiv").strip() or "arxiv"
+            self.chat.set_meta("feature_key", feature_key, session_id=sid)
 
         # 1) 先把用户消息显示出来
-        self.chat.add("user", text, session_id=sid)
+        self.chat.add("user", raw_text, session_id=sid)
         self._refresh()
 
-        # 2) 组装历史（只拿 user/assistant，过滤 system 进度）
+        # 2) 组装历史
         history = []
         for m in self.chat.messages(session_id=sid):
-            if m.role in ("user", "assistant"):
+            if feature_key == "zh2en":
+                if m.role in ("user", "assistant"):
+                    history.append({"role": m.role, "content": m.text})
+            elif m.role in ("user", "assistant"):
                 history.append({"role": m.role, "content": m.text})
 
         # 3) 取 init meta
         init_meta = self.chat.get_meta("init_meta", {}, session_id=sid) or {}
 
-        # 4) 后台跑：OpenAI（带历史记忆）
-        from paperscout.ui.workers.dual_chat_worker import start_dual_chat
-
         # 防止连点
-        try:
-            self.composer.btn_send.setEnabled(False)
-        except Exception:
-            pass
+        self._send_locked = True
+        self._sync_composer_state()
 
         def _on_progress(msg: str):
             self.chat.add("system", msg, session_id=sid)
@@ -400,29 +499,57 @@ class MainWindow(QMainWindow):
 
         def _on_ok(final_answer: str):
             self.chat.add("assistant", final_answer, session_id=sid)
-            try:
-                self.composer.btn_send.setEnabled(True)
-            except Exception:
-                pass
+            self._send_locked = False
+            self._sync_composer_state()
+            self._refresh()
+
+        def _on_ok_zh2en(final_answer: str, updated_meta: dict):
+            current_meta = self.chat.get_meta("init_meta", {}, session_id=sid) or {}
+            merged_meta = dict(current_meta) if isinstance(current_meta, dict) else {}
+            if isinstance(updated_meta, dict) and updated_meta:
+                merged_meta.update(updated_meta)
+                self.chat.set_meta("init_meta", merged_meta, session_id=sid)
+            self.chat.add("assistant", final_answer, session_id=sid)
+            self._send_locked = False
+            self._sync_composer_state()
             self._refresh()
 
         def _on_err(err: str):
-            self.chat.add("assistant", f"（OpenAI 对话失败）{err}", session_id=sid)
-            try:
-                self.composer.btn_send.setEnabled(True)
-            except Exception:
-                pass
+            prefix = "（中译英对话失败）" if feature_key == "zh2en" else "（OpenAI 对话失败）"
+            self.chat.add("assistant", f"{prefix}{err}", session_id=sid)
+            self._send_locked = False
+            self._sync_composer_state()
             self._refresh()
 
-        th, worker, relay = start_dual_chat(
-            settings=self.settings,
-            history=history[:-1],      # 去掉刚刚加入的用户消息，worker里会再附上
-            user_text=text,
-            init_meta=init_meta,
-            on_progress=_on_progress,
-            on_ok=_on_ok,
-            on_err=_on_err,
-        )
+        try:
+            if feature_key == "zh2en":
+                from paperscout.ui.workers.zh2en_chat_worker import start_zh2en_chat
+                th, worker, relay = start_zh2en_chat(
+                    settings=self.settings,
+                    history=history[:-1],
+                    user_text=raw_text,
+                    init_meta=init_meta,
+                    on_progress=_on_progress,
+                    on_ok=_on_ok_zh2en,
+                    on_err=_on_err,
+                )
+            else:
+                from paperscout.ui.workers.dual_chat_worker import start_dual_chat
+                th, worker, relay = start_dual_chat(
+                    settings=self.settings,
+                    history=history[:-1],      # 去掉刚刚加入的用户消息，worker里会再附上
+                    user_text=raw_text,
+                    init_meta=init_meta,
+                    on_progress=_on_progress,
+                    on_ok=_on_ok,
+                    on_err=_on_err,
+                )
+        except Exception as e:
+            self._send_locked = False
+            self._sync_composer_state()
+            self.chat.add("assistant", f"（启动对话失败）{e}", session_id=sid)
+            self._refresh()
+            return
         # 必须同时保持 thread、worker、relay 的 Python 引用
         self._bg_threads.append((th, worker, relay))
         try:
